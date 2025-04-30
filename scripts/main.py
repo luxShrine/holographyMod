@@ -46,7 +46,7 @@ def main_train(
     # NOTE: quick test settings
     # batch = 8
     # crop = 256
-    # ep = 2
+    # ep = 3
     # learn_rate = 1e-3
 
     # NOTE: substantial test settings
@@ -75,15 +75,20 @@ def main_train(
     )
 
 
-# TODO: decide/find proper units for this
+# NOTE: main database used ODP-DLHM-Database specs: 
+# 4640x3506 [px]
+# 8bit-monochromatic
+# 3.8 [um] pixel size
+# 405, 510, 654, [nm] laser 
+# 0.5-4 [um]
 @app.command()
-def main_recon(img_file_path: str, wavelength: float = 530e-9, z: float = 300e-6, dx: float = 1.12e-6):
+def main_recon(img_file_path: str, wavelength: float = 530e-9, z: float = 300e-6, dx: float = 1e-6):
     """Peform reconstruction on an image.
 
     Args:
         img_file_path: Path to image for reconstruction
         wavelength: wavelength of light used to capture the image (nm)
-        z: distance of measurement in terms of height (um)
+        z: distance of measurement (um)
         dx: size of image px (um)
 
     """
@@ -91,7 +96,7 @@ def main_recon(img_file_path: str, wavelength: float = 530e-9, z: float = 300e-6
 
     cropped_image = np.asarray(crop_max_square(pil_image))
 
-    fresnel_numpy(cropped_image, dx, wavelength, z)
+    _=fresnel_numpy(cropped_image, dx, wavelength, z)
 
 
 @app.command()
@@ -100,7 +105,7 @@ def create_meta(hologram_directory: str, out_directory: str):
     hologram_dir = Path(hologram_directory)
     out_dir = Path(out_directory)
 
-    build_metadata_csv(
+    _ = build_metadata_csv(
         hologram_dir,
         out_dir,
     )
