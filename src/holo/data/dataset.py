@@ -61,7 +61,7 @@ class HologramFocusDataset(Dataset[tuple[ImageType, int]]):
         bin_edges: npt.NDArray[np.float64] = np.arange(min_z, max_z + self.class_steps, self.class_steps, float)
         self.num_bins: int = len(bin_edges) - 1
         self.bin_edges = bin_edges
-        self.bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])  # keep to use in plotting function
+        self.bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])  # keep for use in plotting function
 
     def __len__(self) -> int:
         """Return the total number of items in the dataset."""
