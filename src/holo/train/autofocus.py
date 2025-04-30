@@ -18,6 +18,7 @@ from rich.progress import BarColumn
 from rich.progress import Progress
 from rich.progress import ProgressColumn
 from rich.progress import SpinnerColumn
+from rich.progress import Task
 from rich.progress import TaskID
 from rich.progress import TaskProgressColumn
 from rich.progress import TextColumn
@@ -40,9 +41,14 @@ from holo.analysis.metrics import plot_actual_versus_predicted
 from holo.data.dataset import HologramFocusDataset
 from holo.util.log import logger
 
+# TODO: move the progress and/or helper functions to own file?
+
 
 class RateColumn(ProgressColumn):
-    def render(self, task: TaskID) -> Text:
+    """Custom class for creating rate column."""
+
+    def render(self, task: Task) -> Text:
+        """Render the speed of batch processing."""
         speed = task.finished_speed or task.speed
         if speed is None:
             return Text("", style="progress.percentage")
@@ -56,7 +62,7 @@ class MetricColumn(ProgressColumn):
         super().__init__()
         self.name, self.fmt, self.style = name, fmt, style
 
-    def render(self, task):
+    def render(self, task: Task):
         val = task.fields.get(self.name)
         if val is None:
             return Text("–")
@@ -64,38 +70,47 @@ class MetricColumn(ProgressColumn):
 
 
 def gather_z_preds(
-    model: torch.nn.Module,
+    model: Module,
     loader: DataLoader[tuple[Tensor, Tensor]],
     dataset: HologramFocusDataset,
     device: str,
 ) -> tuple[npt.NDArray[Any], npt.NDArray[Any]]:
-    """Forward-pass over `loader` and return (z_predicted_μm, z_true_μm) on CPU.
+    """Combine model predictions info format appropriate for comparison.
 
-    Works whether your network outputs:
-        • class logits   → we arg-max and map to μm
-        • class indices  → same mapping
-        • direct z_regression → we take it as-is
+    Args:
+        model (Module): Class of neural network used for prediction.
+        loader (DataLoader): Iterable that contains dataset samples.
+        dataset (HologramFocusDataset): Custom dataset object for passing in bin values.
+        device (str): Device used for analysis.
+
+    Returns:
+        tuple[NDArray, NDArray]: The z-value predictions and truth values.
+
     """
-    model.eval()
+    model.eval()  # set model into evaluation rather than training mode
     z_preds, z_true = [], []
 
     with torch.no_grad():
-        for x, y in loader:  # y is class index (LongTensor)
+        for x, y in loader:  # y is class index
+            # non_blocking corresponds to allowing for multiple tensors to be sent to device
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
 
-            out = model(x)
+            out = model(x)  # pass in data to model
 
             # pick the form that matches network
-            if out.ndim == 2:  # logits for Nclasses
+            if out.ndim == 2:
+                # if model outputs 2D tensor of scores/probabilities, set to 1D
                 cls_pred = out.argmax(dim=1).cpu()
-            else:  # already cls index or regression
+            else:
+                # if model outputs tensor already including an index, "squeeze" out anything but the data
                 cls_pred = out.squeeze().cpu().long()
 
-            # convert z to um
+            # convert z to um from object parameters
             z_pred = dataset.bin_centers[cls_pred.numpy()] * 1000
             z_tgt = dataset.bin_centers[y.cpu().numpy()] * 1000
 
+            # store each of these values
             z_preds.append(z_pred)
             z_true.append(z_tgt)
 
@@ -123,7 +138,7 @@ def get_model(num_classes: int, backbone: str = "efficientnet_b4"):
         backbone: The name of the model backbone to use (e.g., 'efficientnet_b4', 'resnet50', 'vit_base_patch16_224').
 
     Returns:
-        A PyTorch model instance.
+        The PyTorch model, with the mapping of the transformation assigned.
 
     """
     # if type is EfficientNet | resnet | vit, load respective pre-trained model
@@ -142,11 +157,9 @@ def get_model(num_classes: int, backbone: str = "efficientnet_b4"):
     else:
         raise ValueError(f"Unknown backbone: {backbone}")
 
-    # The model type, with the mapping of the transformation assigned
     return model
 
 
-# TODO: <04-27-25>
 def train_epoch(
     model: Module,
     loader: DataLoader[tuple[Tensor, Tensor]],
@@ -156,27 +169,41 @@ def train_epoch(
     task_id: TaskID,
     prog: Progress,
 ) -> float:
-    """Train one epoch."""
+    """Trains model over one epoch.
+
+    Args:
+        model (Module): The model which ought to undergo training.
+        loader (DataLoader): Iterable that contains the portion of training dataset samples.
+        criterion (Module): Measurer of error, as prediction probability diverges, this will generate greater values.
+        optimizer (Optimizer): Algorithm used to steer the model in the correct direction.
+        device (str): Device used for training (cuda or CPU).
+        task_id (TaskID): Identifier for what task to update on with rich's progress bar.
+        prog (Progress): Which progress object to update.
+
+    Returns:
+        float: Average loss of the model after epoch completes.
+
+    """
     model.train()
     loss = 0
     for imgs, labels in loader:
-        imgs, labels = imgs.to(device), labels.to(device)
+        imgs, labels = imgs.to(device), labels.to(device)  # associate torch tensor with device
 
-        optimizer.zero_grad()
-        outputs = model(imgs)
-        loss_current = criterion(outputs, labels)
-        loss_current.backward()
-        optimizer.step()
+        optimizer.zero_grad()  # reset gradients each loop
+        outputs = model(imgs)  # pass in tensors of images, to get output of tensor data
+        loss_current = criterion(outputs, labels)  # find loss
+        loss_current.backward()  # compute the gradient of the loss
+        optimizer.step()  # compute one step of the optimization algorithim
 
-        loss += loss_current.item() * imgs.size(0)
-        prog.update(task_id, advance=1, loss=f"{loss_current.item():.4f}")
+        loss += loss_current.item() * imgs.size(0)  # sum the value of the loss, scaled to the size of image tensor
+        prog.update(task_id, advance=1, loss=f"{loss_current.item():.4f}")  # update progress bar
 
     # Check if loader.dataset exists and is not None before calculating length
     dataset_len = len(loader.dataset) if loader.dataset is not None else 0
     if dataset_len == 0:
         return 0.0  # Return zero loss and accuracy if dataset is empty
 
-    avg_loss: float = loss / float(dataset_len)
+    avg_loss: float = loss / float(dataset_len)  # otherwise calcuate avg loss normally
     return avg_loss
 
 
@@ -190,7 +217,7 @@ def validate_epoch(
     correct: int = 0
     total: int = 0
 
-    with torch.no_grad():
+    with torch.no_grad():  # reduces memory consumption when doing inference, as is the case for validation
         for imgs, labels in loader:
             imgs, labels = imgs.to(device), labels.to(device)
             output = model(imgs)
@@ -202,10 +229,8 @@ def validate_epoch(
             # Ensure comparison is appropriate if labels are not single integers per sample
             # WARN: If labels have a different shape, total calculation might need adjustment
             correct += (preds == labels).sum().item()
-            # total += labels.size
             total += labels.numel()  # Use numel() for total elements
 
-    # Check if loader.dataset exists and is not None before calculating length
     dataset_len = len(loader.dataset) if loader.dataset is not None else 0
     if dataset_len == 0:
         return 0.0, 0.0  # Return zero loss and accuracy if dataset is empty
@@ -371,7 +396,7 @@ def train_autofocus(
     # TODO: <04-27-25>
     # Loss & optimizer
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    optimizer = optim.Adam(model.parameters(), lr=lr)  # common optimization algorithm, adapts learning rates
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.1, patience=5)
 
     # setup progress monitoring
