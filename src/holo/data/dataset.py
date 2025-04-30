@@ -1,5 +1,5 @@
-import os
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -13,7 +13,6 @@ from holo.io.metadata import correct_data_csv
 from holo.util.log import logger
 
 
-# TODO: <04-27-25>
 class HologramFocusDataset(Dataset[tuple[ImageType, int]]):
     """Store dataset information relevant to reconstruction."""
 
@@ -38,11 +37,12 @@ class HologramFocusDataset(Dataset[tuple[ImageType, int]]):
         self.crop_size: int = crop_size  # assign the crop size
         self.class_steps: float = class_steps / 1000  # convert to mm
         self.hologram_dir: Path = hologram_dir  # Store path for hologram directory
-        self.metadata_csv_name: str = metadata_csv  # Store metadata csv name
+        self.metadata_csv_path_str: str = metadata_csv  # Store metadata csv name
 
-        path_to_csv: Path = self.hologram_dir / metadata_csv
+        path_to_csv: Path = self.hologram_dir / self.metadata_csv_path_str
         unfiltered_df: pl.DataFrame = pl.read_csv(path_to_csv, separator=";")  # read metadata CSV
-        self.records: pl.DataFrame = correct_data_csv(path_to_csv, hologram_dir)
+        # cleanup data remove bad images, bad paths
+        self.records: pl.DataFrame = correct_data_csv(path_to_csv, self.hologram_dir)
 
         # lists how many images were dropped
         n_bad = unfiltered_df.height - self.records.height
@@ -50,7 +50,8 @@ class HologramFocusDataset(Dataset[tuple[ImageType, int]]):
             logger.warning("Dropped %d corrupt or non-image files", n_bad, extra={"markup": True})
 
         # WARN: debug only
-        pprint(self.records.sample(10, shuffle=True))
+        with pl.Config(fmt_str_lengths=50):  # make it a little longer for path
+            pprint(self.records.sample(10, shuffle=True))
 
         # build class bins
         min_z: float = self.records.select(pl.min("z_value")).item()
@@ -70,42 +71,36 @@ class HologramFocusDataset(Dataset[tuple[ImageType, int]]):
         """Retrieve an item from the dataset by index and return the image along with the object.
 
         Args:
-            idx (int): The index of the item.
             self: The object associated with the item.
+            idx (int): The index of the item.
 
         Returns:
             Tuple[Image, int]: A tuple containing the data of the image, and its corresponding index in the total
                                dataset.
 
         """
-        # Using slice and .item() for simplicity here.
-        # For performance, consider self.records.row(idx, named=True)
-        rec_row = self.records[idx]
-        relative_path: str = rec_row["path"].item()  # Extract string value
+        # grabs row at index, each column value in this row corresponds to its row via the dict structure
+        record_row: dict[str, Any] = self.records.row(idx, named=True)
+        relative_path: str = record_row["path"].item()  # Extract string path value
 
-        # Construct absolute path (assuming path in CSV is relative to CSV location)
-        csv_dir = os.path.dirname(self.metadata_csv_name)
-        absolute_path = os.path.join(csv_dir, relative_path)
+        absolute_csv_path = Path(self.metadata_csv_path_str) / relative_path  # Construct absolute path to each image
 
         # load hologram image with PIL
         try:
-            img_pil = Image.open(absolute_path)
+            # Translates pixels through given palette, "L" grayscale, "RGB" color
+            img_pil = Image.open(absolute_csv_path).convert("L")
         except Exception as e:
-            pprint(f"Error loading image {absolute_path}: {e}")
-            raise  # Re-raise other PIL errors
+            pprint(f"Error loading image {absolute_csv_path}: {e}")
+            raise  # raise any PIL errors
 
-        # generate class label from z_value
-        z_value: float = rec_row["z_value"].item()  # Use .item()
+        z_value: float = record_row["z_value"].item()  # generate class label from z_value
 
-        # TODO: <04-27-25> ?
-        # Find which bin z_um falls into (using edges directly)
-        # np.digitize returns indices starting from 1. Subtract 1 for 0-based index.
+        # np.digitize returns indices of the bins to which each value of z belongs
+        # it starts from 1 thus -1 for 0-based index
         cls_dig = np.digitize(z_value, self.bin_edges) - 1
-        # Clip to ensure label is within [0, num_bins - 1]
+        # assign these values
+        # clip to ensure label is 0 <= label <= (number of bins - 1)
         cls = int(np.clip(cls_dig, 0, self.num_bins - 1))  # Ensure integer type
 
-        # Translates pixels through given palette (here RGB) #TODO: again, ought the be gray scale?
-        img_pil = Image.open(absolute_path).convert("RGB")
-
-        # TODO: <04-27-25> what is this returning, how does it return the class? the object
+        # return the image, and a new instance of the class
         return img_pil, cls
