@@ -1,0 +1,53 @@
+[project]
+name = "holographyMod"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.10.1",
+    "numpy>=2.2.4",
+    "pillow>=11.2.1",
+    "polars>=1.27.1",
+    "ruff>=0.11.7",
+    "timm>=1.0.15",
+    "torch>=2.6.0",
+    "torchoptics>=0.3.1",
+    "torchvision>=0.21.0",
+    "typer>=0.15.2",
+]
+
+
+[tool.basedpyright]
+pythonVersion           = "3.12"
+typeCheckingMode        = "strict"          # “basic” 
+venvPath                = ".venv"
+venv                    = "."
+stubPath                = "typings"
+exclude                 = ["src/static", "src/data"]
+extraPaths              = ["src"]           # 'import holo' will resolve
+reportMissingImports    = true
+reportMissingTypeStubs  = false
+reportUnusedImport      = "warning"
+reportPrivateUsage      = "warning"
+reportGeneralTypeIssues = "warning"
+
+[tool.ruff]
+src                        = ["src", "scripts", "tests"]
+line-length                = 120
+target-version             = "py312"
+exclude                    = ["src/static", "src/data", ".venv"]
+show-fixes                 = true
+unsafe-fixes               = true
+respect-gitignore          = true
+select                     = ["E", "F", "I", "UP", "B", "D"]
+ignore                     = ["D100", "D104"]        # no module-level docstring
+
+[tool.ruff.isort]
+force-single-line         = true
+known-first-party         = ["holo"]
+known-third-party         = ["torch", "torchvision", "polars", "numpy", "PIL"]
+
+[tool.ruff.format]
+docstring-code-format = true
+quote-style           = "double"

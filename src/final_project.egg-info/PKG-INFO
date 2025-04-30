@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: final-project
+Version: 0.1.0
+Summary: Add your description here
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: matplotlib>=3.10.1
+Requires-Dist: numpy>=2.2.4
+Requires-Dist: pillow>=11.2.1
+Requires-Dist: polars>=1.27.1
+Requires-Dist: ruff>=0.11.7
+Requires-Dist: timm>=1.0.15
+Requires-Dist: torch>=2.6.0
+Requires-Dist: torchoptics>=0.3.1
+Requires-Dist: torchvision>=0.21.0
+Requires-Dist: typer>=0.15.2
