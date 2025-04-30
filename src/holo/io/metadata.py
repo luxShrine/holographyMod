@@ -1,6 +1,46 @@
 from pathlib import Path
 
 import polars as pl
+from PIL import Image
+from PIL import UnidentifiedImageError
+
+
+# check image is not corrupted
+def _is_valid(path: str) -> bool:
+    try:
+        with Image.open(path) as im:
+            im.verify()  # quickly check if okay
+        return True
+    except (FileNotFoundError, UnidentifiedImageError, OSError):
+        return False
+
+
+def correct_data_csv(path_csv_str: Path, dataset_dir: Path):
+    """Ensure input dataframe maps on properly to data and paths."""
+    dataset_parent: str = str(dataset_dir.parent.expanduser().resolve())
+    unfiltered_path_df: pl.DataFrame = pl.read_csv(path_csv_str, separator=";")  # read metadata CSV
+
+    # get each path, get rid of leading "./", prepend it with the path to dataset parent, replace original path column
+    clean_abs_path_df: pl.DataFrame = unfiltered_path_df.with_columns(
+        pl.col("path").str.replace(r"\./", dataset_parent)
+    )
+
+    # check if row actually points to an existing file, must use Path's function, thus map_elements
+    filtered_path_df: pl.DataFrame = clean_abs_path_df.filter(
+        pl.col("path").map_elements(lambda p: Path(p).is_file(), pl.Boolean)
+    )
+
+    # make sure that there are any files after filtering
+    if filtered_path_df.is_empty():
+        raise RuntimeError("No hologram files found after filtering non-existing ones")
+
+    # check image is not corrupted, again using PIL, thus map_elements
+    proper_image_df = filtered_path_df.filter(pl.col("path").map_elements(_is_valid, pl.Boolean))
+
+    # Ensure path column is treated as string
+    casted_proper_image_df = proper_image_df.with_columns(pl.col("path").cast(pl.Utf8))
+
+    return casted_proper_image_df
 
 
 def parse_info(info_file: Path):
