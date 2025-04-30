@@ -28,7 +28,7 @@ exclude                 = ["src/static", "src/data"]
 extraPaths              = ["src"]           # 'import holo' will resolve
 reportMissingImports    = true
 reportMissingTypeStubs  = false
-reportUnusedImport      = "warning"
+reportUnusedImport      = "hint"
 reportPrivateUsage      = "warning"
 reportGeneralTypeIssues = "warning"
 
@@ -46,7 +46,7 @@ ignore                     = ["D100", "D104"]        # no module-level docstring
 [tool.ruff.isort]
 force-single-line         = true
 known-first-party         = ["holo"]
-known-third-party         = ["torch", "torchvision", "polars", "numpy", "PIL"]
+known-third-party         = ["matplotlib", "torch", "torchvision", "polars", "numpy", "PIL"]
 
 [tool.ruff.format]
 docstring-code-format = true
