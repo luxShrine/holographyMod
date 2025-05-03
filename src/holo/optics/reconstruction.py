@@ -1,27 +1,30 @@
-from typing import Literal
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 import torch
-import torchoptics as topo
-from torchoptics.fields import Field
+from PIL import Image
+from PIL.Image import Image as ImageType
+from torchvision import transforms
 
-__all__ = ["fresnel_numpy", "propagate_torch"]
+from holo.train.autofocus import get_model
+from holo.util.crop import crop_max_square
+
+__all__ = ["fresnel_recon", "torch_recon"]
 
 
-def propagate_torch(
-    holo: torch.Tensor,
-    *,
+def torch_recon(
+    img_file_path: str,
     wavelength: float,
-    z: float,
-    spacing: float = 3.8e-6,
-    out: Literal["complex", "amp", "phase", "intensity"] = "complex",
-) -> torch.Tensor:
-    """Fresnel (angular-spectrum) propagation with TorchOptics.
+    ckpt_file: str,
+    crop_size: int = 512,
+    z: float = 300e-6,
+    backbone: str = "efficientnet_b4",
+    spacing: float = 3e-6,
+):
+    """Fresnel.
 
     Args:
-        holo:       torch.Tensor
-                    Real-valued **square** tensor `[H,W]` or `[1,H,W]`, scaled 0‒1.
         wavelength: float
                     Wavelength in **metres** for this image.
         z:          float
@@ -36,43 +39,50 @@ def propagate_torch(
         torch.Tensor: Complex field or real map, depending on out.
 
     """
-    # TODO: <04-27-25>
-    # normalise shape C×H×W
-    if holo.dim() == 2:  # H×W → 1×H×W
-        holo = holo.unsqueeze(0)
-    elif holo.dim() != 3 or holo.size(0) != 1:
-        raise ValueError("holo must be shape [H,W] or [1,H,W]")
+    pil_image: ImageType = Image.open(img_file_path).convert("RGB")
+    pil_image_crop = crop_max_square(pil_image)
+    np.asarray(crop_max_square(pil_image))
 
-    # TODO: <04-27-25>
-    # convert amplitude-only tensor to complex field
-    topo.set_default_spacing(spacing)  # global default (over-ridden below)
-    field = Field(holo.sqrt(), z=0.0)  # amplitude = √intensity
-    if not torch.is_complex(field.field):
-        field.field = field.field.to(torch.complex64)
+    # build architecture + load weights
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # TODO: <04-27-25>
-    # per-sample parameters
-    field.wavelength = wavelength
-    field.spacing[:] = spacing  # [dy, dx] broadcast
+    ckpt = torch.load(ckpt_file, map_location=device, weights_only=True)  # type: ignore
+    bin_centers = ckpt["bin_centers"]
 
-    # TODO: <04-27-25>
-    # propagate
-    reconstruct = field.propagate_to_z(z)  # returns new Field
+    model = get_model(ckpt["num_bins"], backbone).to(device)
+    model.load_state_dict(ckpt["model_state_dict"])
+    model.eval()
 
-    # TODO: <04-27-25>
-    # select output
-    match out:
-        case "complex":
-            return reconstruct.field.squeeze(0)  # -> H×W complex
-        case "amp":
-            return reconstruct.amplitude().squeeze(0)
-        case "phase":
-            return reconstruct.phase().squeeze(0)
-        case "intensity":
-            return reconstruct.intensity().squeeze(0)
-        # TODO: <04-27-25>
-        case _:
-            raise ValueError(f"unknown out='{out}'")
+    # load & preprocess image
+    preprocess = transforms.Compose(
+        [
+            transforms.Resize((crop_size, crop_size)),
+            transforms.ToTensor(),
+            # use the same normalization you did in train
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+    x = preprocess(pil_image_crop).unsqueeze(0).to(device)  # shape [1,C,H,W]# type: ignore
+
+    # prediction
+    with torch.no_grad():
+        logits = model(x)  # shape [B, C]
+        probs = torch.softmax(logits, dim=1)
+
+        # discrete estimate
+        # cls = probs.argmax(1)         # shape [B]
+        # z_argmax = bin_centers[cls]   # depth in mm
+
+        # continuous estimate
+        z_expect = (probs * bin_centers).sum(1)  # ⟨z⟩ = Σ p_i z_i
+
+    holo_gray = np.asarray(crop_max_square(pil_image).convert("L"), dtype=np.float32) / 255.0
+    recon = fresnel_recon(holo_gray, dx=1.12e-6, wavelength=wavelength, z=float(z_expect) * 1e-3)
+    amp: npt.NDArray[np.float64] = np.abs(recon)
+    phase: npt.NDArray[Any] = np.angle(recon)
+
+    hologram = np.array(pil_image_crop)
+    return hologram, amp, phase
 
 
 # the transform to find the field
@@ -84,7 +94,7 @@ def propagate_torch(
 
 
 # Fresnel transform:
-def fresnel_numpy(img: npt.NDArray[np.float64], dx: float, wavelength: float, z: float) -> npt.NDArray[np.float64]:
+def fresnel_recon(img: npt.NDArray[np.float64], dx: float, wavelength: float, z: float) -> npt.NDArray[np.float64]:
     """Classical numperical reconstruction.
 
     Args:
