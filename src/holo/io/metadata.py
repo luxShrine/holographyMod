@@ -17,16 +17,23 @@ def _is_valid(path: str) -> bool:
 
 def correct_data_csv(path_csv_str: Path, dataset_dir: Path):
     """Ensure input dataframe maps on properly to data and paths."""
-    dataset_parent: str = str(dataset_dir.parent.expanduser().resolve()) + "/"
+    # dataset_parent: str = str(dataset_dir.parent.expanduser().resolve()) + "/"
+    dataset_base_path: Path = dataset_dir.parent.expanduser().resolve()
     unfiltered_path_df: pl.DataFrame = pl.read_csv(path_csv_str, separator=";")  # read metadata CSV
 
     # get each path, get rid of leading "./", prepend it with the path to dataset parent, replace original path column
-    clean_abs_path_df: pl.DataFrame = unfiltered_path_df.with_columns(
-        pl.col("path").str.replace(r"\./", dataset_parent)
+    # clean_abs_path_df: pl.DataFrame = unfiltered_path_df.with_columns(
+    #     pl.col("path").str.replace(r"\./", dataset_parent)
+    # )
+
+    abs_path_df: pl.DataFrame = unfiltered_path_df.with_columns(
+        pl.col("path")
+        .map_elements(lambda p: str(dataset_base_path / Path(p)), return_dtype=pl.Utf8)
+        .alias("path")  # Overwrite the original 'path' column
     )
 
     # check if row actually points to an existing file, must use Path's function, thus map_elements
-    filtered_path_df: pl.DataFrame = clean_abs_path_df.filter(
+    filtered_path_df: pl.DataFrame = abs_path_df.filter(
         pl.col("path").map_elements(lambda p: Path(p).is_file(), pl.Boolean)
     )
 
@@ -38,9 +45,10 @@ def correct_data_csv(path_csv_str: Path, dataset_dir: Path):
     proper_image_df = filtered_path_df.filter(pl.col("path").map_elements(_is_valid, pl.Boolean))
 
     # Ensure path column is treated as string
-    casted_proper_image_df = proper_image_df.with_columns(pl.col("path").cast(pl.Utf8))
+    # casted_proper_image_df = proper_image_df.with_columns(pl.col("path").cast(pl.Utf8))
 
-    return casted_proper_image_df
+    # return casted_proper_image_df
+    return proper_image_df
 
 
 def parse_info(info_file: Path):
