@@ -1,14 +1,15 @@
 import os
-import pathlib as Path
 import random
 
 # Imports needed for type hinting
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 from typing import TypeVar
 
 import numpy as np
-import numpy.typing as npt
+
+# import numpy.typing as npt
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -35,6 +36,8 @@ from torch.utils.data import Subset
 from torch.utils.data import random_split
 from torchvision import models
 from torchvision import transforms
+
+from holo.analysis.metrics import gather_z_preds
 
 # local
 from holo.analysis.metrics import plot_actual_versus_predicted
@@ -69,59 +72,11 @@ class MetricColumn(ProgressColumn):
         return Text(self.fmt.format(val), style=self.style)
 
 
-def gather_z_preds(
-    model: Module,
-    loader: DataLoader[tuple[Tensor, Tensor]],
-    dataset: HologramFocusDataset,
-    device: str,
-) -> tuple[npt.NDArray[Any], npt.NDArray[Any]]:
-    """Combine model predictions info format appropriate for comparison.
-
-    Args:
-        model (Module): Class of neural network used for prediction.
-        loader (DataLoader): Iterable that contains dataset samples.
-        dataset (HologramFocusDataset): Custom dataset object for passing in bin values.
-        device (str): Device used for analysis.
-
-    Returns:
-        tuple[NDArray, NDArray]: The z-value predictions and truth values.
-
-    """
-    model.eval()  # set model into evaluation rather than training mode
-    z_preds, z_true = [], []
-
-    with torch.no_grad():
-        for x, y in loader:  # y is class index
-            # non_blocking corresponds to allowing for multiple tensors to be sent to device
-            x = x.to(device, non_blocking=True)
-            y = y.to(device, non_blocking=True)
-
-            out = model(x)  # pass in data to model
-
-            # pick the form that matches network
-            if out.ndim == 2:
-                # if model outputs 2D tensor of scores/probabilities, set to 1D
-                cls_pred = out.argmax(dim=1).cpu()
-            else:
-                # if model outputs tensor already including an index, "squeeze" out anything but the data
-                cls_pred = out.squeeze().cpu().long()
-
-            # convert z to um from object parameters
-            z_pred = dataset.bin_centers[cls_pred.numpy()] * 1000
-            z_tgt = dataset.bin_centers[y.cpu().numpy()] * 1000
-
-            # store each of these values
-            z_preds.append(z_pred)
-            z_true.append(z_tgt)
-
-    return np.concatenate(z_preds), np.concatenate(z_true)
-
-
 def set_seed(seed: int = 42):
     """Assign a random seed to all three backends, torch, numpy and pythons native random."""
     random.seed(seed)
     np.random.seed(seed)
-    torch.manual_seed(seed)
+    torch.manual_seed(seed)  # type:ignore
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
@@ -241,7 +196,7 @@ def validate_epoch(
 
 
 def train_autofocus(
-    hologram_dir: Path.Path,
+    hologram_dir: Path,
     metadata_csv: str,
     out_dir: str,
     backbone: str = "efficientnet_b4",
@@ -273,6 +228,8 @@ def train_autofocus(
     """
     set_seed(seed)
     os.makedirs(out_dir, exist_ok=True)  # ensure that the output directory exists, if not, create it
+    path_to_checkpoint: Path = Path(out_dir) / Path("latest_checkpoint.pth")
+    path_to_model: Path = Path(out_dir) / Path("best_model.pth")
 
     # make sure cuda is available otherwise use cpu
     if device == "cuda" and torch.cuda.is_available():
@@ -294,10 +251,10 @@ def train_autofocus(
             transforms.RandomVerticalFlip(),
             # TODO: Add other relevant augmentations if needed
             transforms.ToTensor(),  # convert to tensor
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-            ),  # Assuming 3-channel conversion, each model has its own desired normalization
+            # Assuming 3-channel conversion, each model has its own desired normalization
             # TODO: make a function to detect if black and white thus needing one-channel
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            # transforms.Normalize(mean=[0.5], std=[0.5]),
         ]
     )
     # The evaluation tensor does not necessitate the same augmentations
@@ -441,29 +398,41 @@ def train_autofocus(
             epoch_val_loss, epoch_acc = validate_epoch(model, val_loader, criterion, device)
 
             # go to next step
-            scheduler.step(epoch_acc)  # Step scheduler based on validation metric
+            scheduler.step(epoch_acc)  # Step scheduler based on validation metric # type:ignore
 
             # store loss data
             train_loss.append(epoch_train_loss)
             val_loss.append(epoch_val_loss)
 
+            bin_centers_tensor = torch.as_tensor(full_dataset.bin_centers)
+
             # Save best model
             if epoch_acc > best_acc:
                 logger.info(f"Validation accuracy improved ({best_acc:.4f} -> {epoch_acc:.4f}). Saving best model...")
                 best_acc = epoch_acc
-                torch.save(model.state_dict(), os.path.join(out_dir, "best_model.pth"))
+                torch.save(  # type:ignore
+                    {
+                        "epoch": epoch,
+                        "model_state_dict": model.state_dict(),
+                        "bin_centers": bin_centers_tensor,
+                        "num_bins": num_classes,
+                    },
+                    path_to_model,
+                )
 
             # Save latest model
-            torch.save(
+            torch.save(  # type:ignore
                 {
                     "epoch": epoch,
                     "model_state_dict": model.state_dict(),
+                    "num_bins": num_classes,
+                    "bin_centers": bin_centers_tensor,
                     "optimizer_state_dict": optimizer.state_dict(),
                     "train_loss": epoch_train_loss,
                     "val_loss": epoch_val_loss,
                     "epoch_acc": epoch_acc,
                 },
-                os.path.join(out_dir, "latest_checkpoint.pth"),
+                path_to_checkpoint,
             )
 
             # update the number of completed tasks, display the quality of progress made
