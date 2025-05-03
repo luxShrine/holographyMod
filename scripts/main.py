@@ -7,16 +7,18 @@ from PIL import Image
 from PIL.Image import Image as ImageType
 
 import holo.io.paths as paths
+import holo.optics.reconstruction as rec
+from holo.analysis.metrics import error_metric
+from holo.analysis.metrics import plot_amp_phase
 from holo.io.metadata import build_metadata_csv
-from holo.optics.reconstruction import fresnel_numpy
 from holo.train.autofocus import train_autofocus
-from holo.util.crop import crop_max_square
+from holo.util.normalize import norm
 
 app = typer.Typer()
 
 
 @app.command()
-def main_train(
+def train(
     ds_root: Path,
     metadata: str = "ODP-DLHM-Database.csv",
     out: str = "checkpoints",
@@ -75,28 +77,50 @@ def main_train(
     )
 
 
-# NOTE: main database used ODP-DLHM-Database specs: 
+# NOTE: main database used ODP-DLHM-Database specs:
 # 4640x3506 [px]
 # 8bit-monochromatic
 # 3.8 [um] pixel size
-# 405, 510, 654, [nm] laser 
+# 405, 510, 654, [nm] laser
 # 0.5-4 [um]
 @app.command()
-def main_recon(img_file_path: str, wavelength: float = 530e-9, z: float = 300e-6, dx: float = 1e-6):
-    """Peform reconstruction on an image.
+def reconstruction(
+    img_file_path: str,
+    model_path: str = "best_model.pth",
+    backbone: str = "efficientnet_b4",
+    crop_size: int = 512,
+    wavelength: float = 530e-9,
+    z: float = 300e-6,
+    dx: float = 1e-6,
+):
+    """Peform reconstruction on an hologram.
 
     Args:
         img_file_path: Path to image for reconstruction
-        wavelength: wavelength of light used to capture the image (nm)
-        z: distance of measurement (um)
-        dx: size of image px (um)
+        model_path: Path to trained model to use for torch optics anaylsis
+        backbone: Model type being loaded
+        crop_size: Pixel width and height of image
+        wavelength: Wavelength of light used to capture the image (nm)
+        z: Distance of measurement (um)
+        dx: Size of image px (um)
 
     """
-    pil_image: ImageType = Image.open(img_file_path)
+    ckpt_file = Path("checkpoints") / model_path
+    if not ckpt_file.exists():
+        typer.secho(f" checkpoint not found at {ckpt_file}", fg="red")
+        raise typer.Exit(1)
+    pil_image: ImageType = Image.open(img_file_path).convert("RGB")
+    recon, amp, phase = rec.torch_recon(img_file_path, wavelength, ckpt_file, crop_size, z, backbone, dx)  # type: ignore
 
-    cropped_image = np.asarray(crop_max_square(pil_image))
+    # normalize both images for comparison
+    holo_org = np.array(pil_image)
+    n_org = norm(holo_org)
+    n_recon = norm(recon)
+    nrmsd, psnr = error_metric(n_org, n_recon, 255)
+    plot_amp_phase(img_file_path, amp, phase, nrmsd=nrmsd, psnr=psnr)
 
-    _=fresnel_numpy(cropped_image, dx, wavelength, z)
+    # error
+    typer.echo(f"the psnr is {psnr} with nrmsd: {nrmsd}")
 
 
 @app.command()
