@@ -8,9 +8,9 @@ from typing import Any
 from typing import TypeVar
 
 import numpy as np
+import torch
 
 # import numpy.typing as npt
-import torch
 import torch.nn as nn
 import torch.optim as optim
 from PIL.Image import Image as ImageType
@@ -37,12 +37,11 @@ from torch.utils.data import random_split
 from torchvision import models
 from torchvision import transforms
 
-from holo.analysis.metrics import gather_z_preds
-
 # local
-from holo.analysis.metrics import plot_actual_versus_predicted
+from holo.analysis.metrics import gather_z_preds
 from holo.data.dataset import HologramFocusDataset
 from holo.util.log import logger
+from holo.util.saveLoad import plotPred
 
 # TODO: move the progress and/or helper functions to own file?
 
@@ -450,31 +449,31 @@ def train_autofocus(
         # )
 
     logger.info(f"Training complete. Best Val Acc: {best_acc:.4f}")
-    hist = [train_loss, val_loss]  # return the history
-
-    # max_px = 255.0
+    loss_hist = [train_loss, val_loss]  # return the history
 
     train_z_pred, train_z_true = gather_z_preds(model, train_loader, train_ds, device)
     val_z_pred, val_z_true = gather_z_preds(model, val_loader, val_ds, device)
 
-    # WARN:
+    # WARN: debug
     print("unique train preds:", np.unique(train_z_pred)[:10], "…")
     print("unique val   preds:", np.unique(val_z_pred)[:10], "…")
     print("unique train true:", np.unique(train_z_true)[:10], "…")
 
-    # train_nrmsd, train_psnr = error_metric(train_tgts, train_preds, max_px)
-    # val_nrmsd, val_psnr = error_metric(val_tgts, val_preds, max_px)
-    # print(f"[metrics]  Train  NRMSD={train_nrmsd:.4f} | PSNR={train_psnr:.2f} dB")
-    # print(f"[metrics]  Val    NRMSD={val_nrmsd:.4f} | PSNR={val_psnr:.2f} dB")
-
     # Plot Actual vs Predicted and save to output dir
-    plot_actual_versus_predicted(
-        y_test_pred=val_z_pred,
-        y_test=val_z_true,
-        y_train_pred=train_z_pred,
-        y_train=train_z_true,
-        title="Actual vs Predicted Focus (µm)",
-        save_fig=True,
-        fname=os.path.join(out_dir, "focus_depth_actual_vs_pred.png"),
+    train_err = np.abs(train_z_pred - train_z_true)
+    val_err = np.abs(val_z_pred - val_z_true)
+
+    # save training data for plotting
+    plot_data_obj = plotPred(
+        val_z_pred,
+        val_z_true,
+        train_z_pred,
+        train_z_true,
+        train_err,
+        val_err,
+        "Actual vs Predicted Focus (µm)",
+        Path(out_dir) / Path("focus_depth_actual_vs_pred.png"),
+        True,
     )
-    return model, hist
+
+    return model, loss_hist, plot_data_obj

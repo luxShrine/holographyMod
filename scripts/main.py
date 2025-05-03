@@ -6,15 +6,33 @@ import typer
 from PIL import Image
 from PIL.Image import Image as ImageType
 
+import holo.analysis.metrics as met
 import holo.io.paths as paths
 import holo.optics.reconstruction as rec
-from holo.analysis.metrics import error_metric
-from holo.analysis.metrics import plot_amp_phase
+import holo.util.saveLoad as sl
 from holo.io.metadata import build_metadata_csv
 from holo.train.autofocus import train_autofocus
 from holo.util.normalize import norm
 
 app = typer.Typer()
+
+
+@app.command()
+def plot_train():
+    """Plot the data saved from autofocus training."""
+    plot_info_list = sl.load_obj()
+    plot_info = plot_info_list[0]  # unpack list of obj
+    met.plot_actual_versus_predicted(
+        plot_info.y_test_pred,
+        plot_info.y_test,
+        plot_info.y_train_pred,
+        plot_info.y_train,
+        plot_info.yerr_train,
+        plot_info.yerr_test,
+        plot_info.title,
+        plot_info.save_fig,
+        str(plot_info.fname),
+    )
 
 
 @app.command()
@@ -63,7 +81,7 @@ def train(
     else:
         ds_root = paths.MW_data()
 
-    _ = train_autofocus(
+    _, _, plot_info = train_autofocus(
         hologram_dir=ds_root,
         metadata_csv=metadata,
         out_dir=out,
@@ -75,6 +93,8 @@ def train(
         val_split=value_split,
         device=device_type,
     )
+
+    sl.save_obj(plot_info)
 
 
 # NOTE: main database used ODP-DLHM-Database specs:
@@ -116,10 +136,14 @@ def reconstruction(
     holo_org = np.array(pil_image)
     n_org = norm(holo_org)
     n_recon = norm(recon)
-    nrmsd, psnr = error_metric(n_org, n_recon, 255)
-    plot_amp_phase(img_file_path, amp, phase, nrmsd=nrmsd, psnr=psnr)
+    nrmsd, psnr = met.error_metric(n_org, n_recon, 255)
+    met.plot_amp_phase(img_file_path, amp, phase, nrmsd=nrmsd, psnr=psnr)
 
     # error
+    # train_nrmsd, train_psnr = error_metric(train_tgts, train_preds, max_px)
+    # val_nrmsd, val_psnr = error_metric(val_tgts, val_preds, max_px)
+    # print(f"[metrics]  Train  NRMSD={train_nrmsd:.4f} | PSNR={train_psnr:.2f} dB")
+    # print(f"[metrics]  Val    NRMSD={val_nrmsd:.4f} | PSNR={val_psnr:.2f} dB")
     typer.echo(f"the psnr is {psnr} with nrmsd: {nrmsd}")
 
 

@@ -16,6 +16,8 @@ src/holo/train/autofocus.py
 src/holo/util/__init__.py
 src/holo/util/crop.py
 src/holo/util/log.py
+src/holo/util/normalize.py
+src/holo/util/saveLoad.py
 src/holographyMod.egg-info/PKG-INFO
 src/holographyMod.egg-info/SOURCES.txt
 src/holographyMod.egg-info/dependency_links.txt
