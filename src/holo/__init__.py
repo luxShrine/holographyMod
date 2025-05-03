@@ -1,4 +1,4 @@
 from importlib.metadata import version
 
 __all__ = ["io", "optics", "data", "analysis", "train", "util"]
-__version__ = version("final_project")
+__version__ = version("holographyMod")
