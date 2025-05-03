@@ -81,19 +81,19 @@ class HologramFocusDataset(Dataset[tuple[ImageType, int]]):
         """
         # grabs row at index, each column value in this row corresponds to its row via the dict structure
         record_row: dict[str, Any] = self.records.row(idx, named=True)
-        relative_path: str = record_row["path"].item()  # Extract string path value
+        relative_path = record_row["path"]  # Extract string path value
 
         absolute_csv_path = Path(self.metadata_csv_path_str) / relative_path  # Construct absolute path to each image
 
         # load hologram image with PIL
         try:
             # Translates pixels through given palette, "L" grayscale, "RGB" color
-            img_pil = Image.open(absolute_csv_path).convert("L")
+            img_pil = Image.open(absolute_csv_path).convert("RGB")
         except Exception as e:
             pprint(f"Error loading image {absolute_csv_path}: {e}")
             raise  # raise any PIL errors
 
-        z_value: float = record_row["z_value"].item()  # generate class label from z_value
+        z_value: float = record_row["z_value"]  # generate class label from z_value
 
         # np.digitize returns indices of the bins to which each value of z belongs
         # it starts from 1 thus -1 for 0-based index
