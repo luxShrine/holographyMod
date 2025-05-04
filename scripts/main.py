@@ -23,14 +23,15 @@ def plot_train():
     plot_info_list = sl.load_obj()
     plot_info = plot_info_list[0]  # unpack list of obj
     met.plot_actual_versus_predicted(
-        plot_info.y_test_pred,
-        plot_info.y_test,
-        plot_info.y_train_pred,
-        plot_info.y_train,
-        plot_info.yerr_train,
-        plot_info.yerr_test,
+        np.array(plot_info.y_test_pred),
+        np.array(plot_info.y_test),
+        np.array(plot_info.y_train_pred),
+        np.array(plot_info.y_train),
+        np.array(plot_info.yerr_train),
+        np.array(plot_info.yerr_test),
         plot_info.title,
-        plot_info.save_fig,
+        # plot_info.save_fig,
+        True,
         str(plot_info.fname),
     )
 
