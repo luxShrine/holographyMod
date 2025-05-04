@@ -31,9 +31,4 @@ def validate_bins(
     if len(good_bins) < 2:
         raise Exception("Not enough populated bins to compute chi^2.")
     else:
-        # "unzips" the list of arrays into each subsequent value as a numpy array
-        # strict false to avoid raising a value error if arrays are different sizes
-        x_train_np, mu_train_np, sigma_train_np = (
-            np.asarray(v, dtype=np.float64) for v in zip(*good_bins, strict=False)
-        )
-        return x_train_np, mu_train_np, sigma_train_np
+        return good_bins
