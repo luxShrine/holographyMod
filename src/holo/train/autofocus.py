@@ -1,5 +1,6 @@
 import os
 import random
+import time
 
 # Imports needed for type hinting
 from collections.abc import Callable
@@ -394,6 +395,8 @@ def train_autofocus(
             # Train
             epoch_train_loss = train_epoch(model, train_loader, criterion, optimizer, device, batch_task, progress)
             # validate
+
+            # logger.info("Beginning Validation...")
             epoch_val_loss, epoch_acc = validate_epoch(model, val_loader, criterion, device)
 
             # go to next step
@@ -408,6 +411,7 @@ def train_autofocus(
             # Save best model
             if epoch_acc > best_acc:
                 logger.info(f"Validation accuracy improved ({best_acc:.4f} -> {epoch_acc:.4f}). Saving best model...")
+                time.sleep(0.5)  # give time to actually read it
                 best_acc = epoch_acc
                 torch.save(  # type:ignore
                     {
@@ -465,14 +469,14 @@ def train_autofocus(
 
     # save training data for plotting
     plot_data_obj = plotPred(
-        val_z_pred,
-        val_z_true,
-        train_z_pred,
-        train_z_true,
-        train_err,
-        val_err,
+        val_z_pred.tolist(),
+        val_z_true.tolist(),
+        train_z_pred.tolist(),
+        train_z_true.tolist(),
+        train_err.tolist(),
+        val_err.tolist(),
         "Actual vs Predicted Focus (µm)",
-        Path(out_dir) / Path("focus_depth_actual_vs_pred.png"),
+        str(Path(out_dir) / Path("focus_depth_actual_vs_pred.png")),
         True,
     )
 
