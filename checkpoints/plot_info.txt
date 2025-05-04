@@ -1,0 +1,13 @@
+plot 50 output:
+Validation RMSE :   45.00  µm
+chi / dof = 30.1 / 16  -> \chi^2_red = 1.88
+p-value  = 0.018
+Validation MAE  :   18.74 µm
+% inside +- 1 sigma ribbon (val):  81.5%
+
+plot 5 output:
+Validation RMSE :  634.37 µm
+χ² / dof = 50.5 / 16  →  χ²_red = 3.16
+p value  = 0.000
+Validation MAE  :  490.98 µm
+% inside ±1σ ribbon (val):  41.2%
