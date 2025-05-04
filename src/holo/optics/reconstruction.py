@@ -17,26 +17,28 @@ def torch_recon(
     img_file_path: str,
     wavelength: float,
     ckpt_file: str,
-    crop_size: int = 512,
-    z: float = 300e-6,
+    crop_size: int = 256,
+    z: float = 300e-6,  #  TODO: implement both predictions, maybe allow choosing
     backbone: str = "efficientnet_b4",
-    spacing: float = 3e-6,
 ):
     """Fresnel.
 
     Args:
-        wavelength: float
-                    Wavelength in **metres** for this image.
-        z:          float
-                    Propagation distance in **metres** (positive = forward).
-        spacing:    float, default 3.8 µm
-                    Pixel pitch at the hologram plane (metres).
-        out:        str, default "complex"
-                    Which quantity to return:
-                    `"complex"` (default), `"amp"`, `"phase"`, `"intensity"`.
+        img_file_path: str,
+                       Path to image to reconstruct.
+        wavelength:    float,
+                       Wavelength for this image (m).
+        ckpt_file:     str,
+                       path to the of weights to use in the model.
+        crop_size:     int,
+                       Size the length/width to crop the image to.
+        z:             float,
+                       propagation distance (m) .
+        backbone:      str,
+                       Name of the pre-trained model to apply the weights to.
 
     Returns:
-        torch.Tensor: Complex field or real map, depending on out.
+        Hologram, Amplitude, phase, all as numpy arrays
 
     """
     pil_image: ImageType = Image.open(img_file_path).convert("RGB")
@@ -70,14 +72,15 @@ def torch_recon(
         probs = torch.softmax(logits, dim=1)
 
         # discrete estimate
-        # cls = probs.argmax(1)         # shape [B]
-        # z_argmax = bin_centers[cls]   # depth in mm
+        # cls = probs.argmax(1) # shape [B]
+        # z_argmax = bin_centers[cls] # depth in mm
 
         # continuous estimate
         z_expect = (probs * bin_centers).sum(1)  # ⟨z⟩ = Σ p_i z_i
 
-    holo_gray = np.asarray(crop_max_square(pil_image).convert("L"), dtype=np.float32) / 255.0
-    recon = fresnel_recon(holo_gray, dx=1.12e-6, wavelength=wavelength, z=float(z_expect) * 1e-3)
+    # TODO: why float32?
+    holo_gray: npt.NDArray[np.float32] = np.asarray(crop_max_square(pil_image).convert("L"), dtype=np.float32) / 255.0
+    recon = fresnel_recon(holo_gray, dx=1e-6, wavelength=wavelength, z=float(z_expect) * 1e-3)
     amp: npt.NDArray[np.float64] = np.abs(recon)
     phase: npt.NDArray[Any] = np.angle(recon)
 
@@ -87,45 +90,37 @@ def torch_recon(
 
 # the transform to find the field
 # E = h(x,y) * G(p,q) | p= x/(lambda z), q = y/(lambda z)
-# TODO: what is a fast-ft? <04-16-25>
-# TODO: explain the process of how to each step works mathematically
+
 # Fourier Transform method of solving Fresnel Diffraction Integral
 # G(p,q) = F(g(x,y)) = iint_{-inf}^{inf} g(x,y) exp(-i2 \pi (px+qy)) dx dy
 
+# TODO: what is a fast-ft? <04-16-25>
+# TODO: explain the process of how to each step works mathematically
+
 
 # Fresnel transform:
-def fresnel_recon(img: npt.NDArray[np.float64], dx: float, wavelength: float, z: float) -> npt.NDArray[np.float64]:
-    """Classical numperical reconstruction.
+def fresnel_recon(img: npt.NDArray[np.float32], dx: float, wavelength: float, z: float) -> npt.NDArray[np.float64]:
+    """Classical numperical reconstruction via Fourier transform.
 
     Args:
         img: hologram as numpy array
-        dx, dy: pixel's physical size [m]
-        wavelength: wavelength of light used for imaging [m]
-        z: propagation distance [m]
+        dx: pixel's physical size [m]
+        wavelength: wavelength of light used for imaging [nm]
+        z: propagation distance [um]
     returns:
         (amplitude, phase) at plane z.
 
     """
-    # TODO: hologram squared hologram
-    # hologram = Image.open(holo_filename)
-    # hologram = crop_max_square(hologram)
-    # convert to greyscale
-    # hologram_array = np.asarray(hologram.convert("L"))
-
-    # extract the amplitude and phase # TODO: ?
-
-    # pixels in the x and y
     k = (2 * np.pi) / wavelength
-    pixelX, pixelY = img.shape
-    dy = dx
+    pixelX, pixelY = img.shape  # returns the dimensions of image array, x, y
+    dy = dx  # pixels assumed be of equal length/width
 
-    # x, y coordinates, corresponding to pixels in image
-    #
-    # endpoint false as since we cross zero it acts as an additional index value, thus we remove that last endpoint
-    # Further, these represent physical space, and thus must be scaled to that appropriate size per pixel
+    # create array, with each value of x, y, corresponding to pixels in image
+    # endpoint=false since we cross zero it acts as an additional index value, remove that last endpoint
+    # to make this physical, must scale by size per pixel
     x = np.linspace(-pixelX / 2, pixelX / 2, pixelX, endpoint=False) * dx
     y = np.linspace(-pixelY / 2, pixelY / 2, pixelY, endpoint=False) * dy
-    X, Y = np.meshgrid(x, y)
+    X, Y = np.meshgrid(x, y)  # fills in the space between these two "basis" vectors
 
     # apply the phase factor # TODO: ?
     # = exp((i \pi / \lambda z) (x^2 + y^2))
@@ -138,9 +133,8 @@ def fresnel_recon(img: npt.NDArray[np.float64], dx: float, wavelength: float, z:
     image_transformed = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(image_pre)))
 
     # in the process of converting from a continuous distribution (what the image is capturing)
-    #
-    # to a discrete set of samples (my arrays) we must limit the sampling rate, done here by: 0.5 * freq, where freq=(dn)^-1
-    # Thus the transfer function h, needs its own grid
+    # to the discrete arrays we must limit the sampling rate, by: 0.5 * freq, where freq=(dn)^-1
+    # using the transfer function, which needs its own grid
     fx = np.linspace(-1 / (2 * dx), 1 / (2 * dx), pixelX, endpoint=False)
     fy = np.linspace(-1 / (2 * dy), 1 / (2 * dy), pixelY, endpoint=False)
     FX, FY = np.meshgrid(fx, fy)
