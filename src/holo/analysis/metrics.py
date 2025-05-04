@@ -11,6 +11,7 @@ from torch.nn import Module
 from torch.utils.data import DataLoader
 
 from holo.data.dataset import HologramFocusDataset
+from holo.io.output import validate_bins
 from holo.util.log import logger
 
 # WARN: backend setting, should be temporary fix
@@ -163,79 +164,62 @@ def plot_actual_versus_predicted(
         centers = 0.5 * (bins[:-1] + bins[1:])  # find the center of the bins, which is the value at which they appear
         digit = np.digitize(z_train, bins) - 1  # find which bin each value falls into, range of 0-28
 
-        good_bins: list[tuple[float, float, float]] = []  # initialize a list of non-zero bins for x, mu, sigma
+        good_bins = validate_bins(centers, digit, min_samples, z_train_pred, sigma_floor)
 
-        for k, center in enumerate(centers):
-            mask = digit == k  # assign only values where the center lines up with values of this particular bin
-            n = mask.sum()  # sum to find the total samples in the bin
-            if n < min_samples:
-                continue  # skip thinly populated bins
+        # "unzips" the list of arrays into each subsequent value as a numpy array
+        # strict false to avoid raising a value error if arrays are different sizes
+        x_train_np, mu_train_np, sigma_train_np = (
+            np.asarray(v, dtype=np.float64) for v in zip(*good_bins, strict=False)
+        )
 
-            vals = z_train_pred[mask]  # if there are sufficient values, we can use it
-            mu = vals.mean()  # find the average value in this bin
-            # find the standard deviation, but limit it such that we don't violate significant figures
-            sigma = max(vals.std(ddof=1), sigma_floor)
+        # chi squared statistic
+        chi2 = np.sum(((mu_train_np - x_train_np) / sigma_train_np) ** 2)  # chi^2 of train_z
+        dof = len(x_train_np) - 1  # set dof to the length of the number of measurements
+        chi2_red = chi2 / dof
+        # p value to measure if my data significantly deviates from expected
+        p_val = 1.0 - chi2_dist.cdf(chi2, dof)  # type: ignore
 
-            good_bins.append((center, mu, sigma))  # store these values for plotting
+        print(f"chi^2 / dof = {chi2:.1f} / {dof} -> chi^2_red = {chi2_red:.2f}")
+        print(f"p-value  = {p_val:.3f}")
 
-        # prevent analyzing too few bins
-        if len(good_bins) < 2:
-            print(r"Not enough populated bins to compute chi^2.")
-        else:
-            # "unzips" the list of arrays into each subsequent value as a numpy array
-            # strict false to avoid raising a value error if arrays are different sizes
-            x_train_np, mu_train_np, sigma_train_np = (
-                np.asarray(v, dtype=np.float64) for v in zip(*good_bins, strict=False)
-            )
+        # plot the mean value of the z_train predictions, with a band representing the error of the bins
+        ax.plot(x_train_np, mu_train_np, color="C0", lw=2, label="Train mean", zorder=4)  # type: ignore
+        ax.fill_between(  # type: ignore
+            x_train_np,
+            mu_train_np - q * sigma_train_np,
+            mu_train_np + q * sigma_train_np,
+            color="C0",
+            alpha=0.20,
+            label=rf"${{ \pm }}${q} ${{ \sigma }}$",
+            zorder=2,
+        )
 
-            # chi squared statistic
-            chi2 = np.sum(((mu_train_np - x_train_np) / sigma_train_np) ** 2)  # chi^2 of train_z
-            dof = len(x_train_np) - 1  # set dof to the length of the number of measurements
-            chi2_red = chi2 / dof
-            # p value to measure if my data significantly deviates from expected
-            p_val = 1.0 - chi2_dist.cdf(chi2, dof)  # type: ignore
+        # measure the percent of values actually inside the standard deviation band
+        sigma_bins = np.full_like(centers, np.nan)  # initialize an array for SD bins, size of centers
+        for count, _, sig in good_bins:
+            # calculate the difference of actual/pred in a bin, take the minimum value
+            # at that index, record the sigma value
+            sigma_bins[np.argmin(np.abs(centers - count))] = sig
 
-            print(f"chi^2 / dof = {chi2:.1f} / {dof} -> chi^2_red = {chi2_red:.2f}")
-            print(f"p-value  = {p_val:.3f}")
+        digit_val = np.digitize(z_test, bins) - 1  # digitize *test* values
+        sigma_val = sigma_bins[digit_val]  # get the SD of each bin of z_test values
 
-            # plot the mean value of the z_train predictions, with a band representing the error of the bins
-            ax.plot(x_train_np, mu_train_np, color="C0", lw=2, label="Train mean", zorder=4)  # type: ignore
-            ax.fill_between(  # type: ignore
-                x_train_np,
-                mu_train_np - q * sigma_train_np,
-                mu_train_np + q * sigma_train_np,
-                color="C0",
-                alpha=0.20,
-                label=rf"${{ \pm }}${q} ${{ \sigma }}$",
-                zorder=2,
-            )
+        # create a condition such that we only evaluate finite and non-negative standard deviations
+        sig_cond = np.isfinite(sigma_val) & (sigma_val > 0)
+        # number of hits: the count of predictions that differ from the actual less than q standard deviations
+        hits = np.abs(z_test_pred[sig_cond] - z_test[sig_cond]) < q * sigma_val[sig_cond]
+        hit_rate = hits.mean() * 100  # return as a percentage
 
-            # Uneeded Residual plot
-            # res_val = y_test_pred - y_test
-            # ax_res = fig.add_axes([0.13, 0.07, 0.68, 0.18])  # [left, bottom, width, height] # type: ignore
-            # ax_res.scatter(y_test, res_val, s=6, alpha=0.4)  # type: ignore
-            # ax_res.axhline(0, color="k", lw=1)  # type: ignore
-            # ax_res.set_xlabel("Actual (µm)")  # type: ignore
-            # ax_res.set_ylabel("Residual")  # type: ignore
+        print(f"Validation MAE  : {np.abs(z_test_pred - z_test).mean():7.2f} µm")
+        print(rf"% inside +-{q} sigma ribbon (val): {hit_rate:5.1f}%")
 
-            # measure the percent of values actually inside the standard deviation band
-            sigma_bins = np.full_like(centers, np.nan)  # initialize an array for SD bins, size of centers
-            for count, _, sig in good_bins:
-                # calculate the difference of actual/pred in a bin, take the minimum value
-                # at that index, record the sigma value
-                sigma_bins[np.argmin(np.abs(centers - count))] = sig
-
-            digit_val = np.digitize(z_test, bins) - 1  # digitize *test* values
-            sigma_val = sigma_bins[digit_val]  # get the SD of each bin of z_test values
-
-            # create a condition such that we only evaluate finite and non-negative standard deviations
-            sig_cond = np.isfinite(sigma_val) & (sigma_val > 0)
-            # number of hits: the count of predictions that differ from the actual less than q standard deviations
-            hits = np.abs(z_test_pred[sig_cond] - z_test[sig_cond]) < q * sigma_val[sig_cond]
-            hit_rate = hits.mean() * 100  # return as a percentage
-
-            print(f"Validation MAE  : {np.abs(z_test_pred - z_test).mean():7.2f} µm")
-            print(rf"% inside +-{q} sigma ribbon (val): {hit_rate:5.1f}%")
+        # Uneeded Residual plot
+        # res_val = y_test_pred - y_test
+        # ax_res = fig.add_axes([0.13, 0.07, 0.68, 0.18])  # [left, bottom, width, height] # type: ignore
+        # ax_res.scatter(y_test, res_val, s=6, alpha=0.4)  # type: ignore
+        # ax_res.axhline(0, color="k", lw=1)  # type: ignore
+        # ax_res.set_xlabel("Actual (µm)")  # type: ignore
+        # ax_res.set_ylabel("Residual")  # type: ignore
 
     # NOTE: must create legend after all plots have been created
     ax.legend(loc="upper left")  # type: ignore
