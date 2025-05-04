@@ -35,7 +35,7 @@ class HologramFocusDataset(Dataset[tuple[ImageType, int]]):
         # my hologram dataset is a subclass of the torch.utils.data Dataset, this allows initializing both classes
         super().__init__()
         self.crop_size: int = crop_size  # assign the crop size
-        self.class_steps: float = class_steps / 1000  # convert to mm
+        self.class_steps: float = class_steps / 1000  # convert um -> mm per bin
         self.hologram_dir: Path = hologram_dir  # Store path for hologram directory
         self.metadata_csv_path_str: str = metadata_csv  # Store metadata csv name
 
@@ -49,9 +49,10 @@ class HologramFocusDataset(Dataset[tuple[ImageType, int]]):
         if n_bad:
             logger.warning("Dropped %d corrupt or non-image files", n_bad, extra={"markup": True})
 
-        # WARN: debug only
-        with pl.Config(fmt_str_lengths=50):  # make it a little longer for path
-            pprint(self.records.sample(10, shuffle=True))
+        # debug only, print random sample of the dataset to ensure nothing is obviously wrong
+        if logger.isEnabledFor(2):
+            with pl.Config(fmt_str_lengths=50):  # make it a little longer for path
+                pprint(self.records.sample(10, shuffle=True))
 
         # build class bins
         min_z: float = self.records.select(pl.min("z_value")).item()
@@ -75,15 +76,15 @@ class HologramFocusDataset(Dataset[tuple[ImageType, int]]):
             idx (int): The index of the item.
 
         Returns:
-            Tuple[Image, int]: A tuple containing the data of the image, and its corresponding index in the total
-                               dataset.
+            Tuple[Image, int]: A tuple containing the data of the image, and it's corresponding bin index.
 
         """
         # grabs row at index, each column value in this row corresponds to its row via the dict structure
         record_row: dict[str, Any] = self.records.row(idx, named=True)
         relative_path = record_row["path"]  # Extract string path value
 
-        absolute_csv_path = Path(self.metadata_csv_path_str) / relative_path  # Construct absolute path to each image
+        # NOTE: This assumes that the CSV file lists the holograms as relative to itself
+        absolute_csv_path = Path(self.metadata_csv_path_str) / relative_path
 
         # load hologram image with PIL
         try:
