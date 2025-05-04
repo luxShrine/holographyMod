@@ -122,8 +122,8 @@ def plot_actual_versus_predicted(
     # global limits
     conc = np.concatenate([y_test_pred, y_test, y_train_pred, y_train])
     span = np.ptp(conc)  # protect against span == 0
-    vmin = conc.min() - span / 4
-    vmax = conc.max() + span / 4
+    vmin: float = conc.min() - span / 4
+    vmax: float = conc.max() + span / 4
 
     fig, ax = plt.subplots(figsize=figsize)  # type: ignore
     ax.set_xlim(vmin, vmax)
