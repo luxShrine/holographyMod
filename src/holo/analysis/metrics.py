@@ -1,5 +1,3 @@
-from typing import Any
-
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
@@ -7,11 +5,17 @@ import torch
 from matplotlib.axes import Axes as AxesType
 from PIL import Image
 from PIL.Image import Image as ImageType
+from scipy.stats import chi2 as chi2_dist
 from torch import Tensor
 from torch.nn import Module
 from torch.utils.data import DataLoader
 
 from holo.data.dataset import HologramFocusDataset
+from holo.util.log import logger
+
+# WARN: backend setting, should be temporary fix
+# import matplotlib
+# matplotlib.use("QtAgg")
 
 
 def gather_z_preds(
@@ -19,7 +23,7 @@ def gather_z_preds(
     loader: DataLoader[tuple[Tensor, Tensor]],
     dataset: HologramFocusDataset,
     device: str,
-) -> tuple[npt.NDArray[Any], npt.NDArray[Any]]:
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Combine model predictions info format appropriate for comparison.
 
     Args:
@@ -33,7 +37,7 @@ def gather_z_preds(
 
     """
     model.eval()  # set model into evaluation rather than training mode
-    z_preds, z_true = [], []
+    z_preds, z_true = np.array([]), np.array([])
 
     with torch.no_grad():
         for x, y in loader:  # y is class index
@@ -56,10 +60,10 @@ def gather_z_preds(
             z_tgt = dataset.bin_centers[y.cpu().numpy()] * 1000
 
             # store each of these values
-            z_preds.append(z_pred)
-            z_true.append(z_tgt)
+            z_preds = np.append(z_preds, z_pred)
+            z_true = np.append(z_true, z_tgt)
 
-    return np.concatenate(z_preds), np.concatenate(z_true)
+    return np.concatenate(z_preds, dtype=np.float64), np.concatenate(z_true, dtype=np.float64)
 
 
 def error_metric(expected: npt.NDArray[np.float64], observed: npt.NDArray[np.float64], max_px: float):
@@ -76,8 +80,7 @@ def error_metric(expected: npt.NDArray[np.float64], observed: npt.NDArray[np.flo
     """
     # Mean squared error (MSE) -> Peak Signal to noise ratio (PSNR)
     # MSE = 1/n \sum_{i=1}^{n} ( x_i - \hat{x}_{i} )^{2}
-    square_error = (np.mean(expected) - np.mean(observed)) ** 2
-    mse = np.mean(square_error)
+    mse = np.mean((expected - observed) ** 2)
     rmse = np.sqrt(mse)
     nrmse = rmse / np.mean(observed)
 
@@ -87,6 +90,7 @@ def error_metric(expected: npt.NDArray[np.float64], observed: npt.NDArray[np.flo
     return nrmse, psnr
 
 
+# TODO: porpely go thru, fix types
 def plot_actual_versus_predicted(
     y_test_pred: npt.NDArray[np.float64],
     y_test: npt.NDArray[np.float64],
@@ -95,7 +99,7 @@ def plot_actual_versus_predicted(
     yerr_train: npt.NDArray[np.float64] | None = None,
     yerr_test: npt.NDArray[np.float64] | None = None,
     title: None | str = None,
-    save_fig: bool = False,
+    save_fig: bool = True,
     fname: str = "pred.png",
     figsize: tuple[int, int] = (8, 8),
 ) -> None:
@@ -106,6 +110,8 @@ def plot_actual_versus_predicted(
         y_test:       Actual values for the test set.
         y_train_pred: Predicted values for the train set.
         y_train:      Actual values for the train set.
+        yerr_train:   Error in train data.
+        yerr_test:    Error in testing data.
         title:        Optional title for the plot.
         save_fig:     If True, save to disk (fname) and close;
                       otherwise, plt.show().
@@ -113,59 +119,119 @@ def plot_actual_versus_predicted(
         figsize:      Figure size in inches (width, height).
 
     """
-    # Concatenate to find global plot limits
+    # global limits
     conc = np.concatenate([y_test_pred, y_test, y_train_pred, y_train])
-    span = np.ptp(conc)
-    vmin = conc.min() - span
-    vmax = conc.max() + span
+    span = np.ptp(conc)  # protect against span == 0
+    vmin = conc.min() - span / 4
+    vmax = conc.max() + span / 4
 
     fig, ax = plt.subplots(figsize=figsize)  # type: ignore
     ax.set_xlim(vmin, vmax)
     ax.set_ylim(vmin, vmax)
 
-    # train vs test
-    # ax.errorbar(y_train, y_train_pred, fmt=",", alpha=0.5, ms=3, ecolor="lightgray", label="Train", capsize=8)  # type: ignore
-    # ax.errorbar(y_test, y_test_pred, fmt=",", alpha=0.7, ms=3, ecolor="lightgray", label="Test", capsize=8)  # type: ignore
+    # training + validation scatter
+    ax.plot([vmin, vmax], [vmin, vmax], "k--", lw=1.5, label="Ideal")  # type: ignore
 
-    ax.errorbar(  # type: ignore
-        y_train,
-        y_train_pred,
-        yerr=yerr_train,
-        fmt="o",
-        alpha=0.4,
-        ms=8,
-        ecolor="lightgray",
-        capsize=2,
-        label="Train",
-    )
-    ax.errorbar(  # type: ignore
-        y_test,
-        y_test_pred,
-        yerr=yerr_test,
-        fmt="s",
-        alpha=0.5,
-        ms=8,
-        ecolor="lightgray",
-        capsize=2,
-        label="Test",
-    )
+    # train scatter
+    ax.scatter(y_train, y_train_pred, s=6, c="C0", alpha=0.12, rasterized=True)  # type: ignore
 
-    # perfect‐prediction line
-    ax.plot([vmin, vmax], [vmin, vmax], "r--", lw=2, label="Ideal")  # type: ignore
+    # validation hexbin
+    hb = ax.hexbin(y_test, y_test_pred, gridsize=90, cmap="inferno", mincnt=1, bins="log", alpha=0.9, zorder=1)  # type: ignore
+    fig.colorbar(hb, ax=ax, label=r"${{ log_{10} }}$(count)")  # type: ignore
 
-    ax.set_xlabel("Actual")  # type: ignore
-    ax.set_ylabel("Predicted")  # type: ignore
+    # labels
+    ax.set_xlabel(r"Actual focus depth $(\mu m)$")  # type: ignore
+    ax.set_ylabel(r"Predicted focus depth $(\mu m)$")  # type: ignore
     if title:
         ax.set_title(title)  # type: ignore
-    ax.legend(loc="upper left")  # type: ignore
     ax.grid(True, linestyle=":")  # type: ignore
 
+    rmse = np.sqrt(((y_test_pred - y_test) ** 2).mean())
+    print(rf"Validation RMSE : {rmse:7.2f} µm")
+
+    # uncertainty ribbon
+    if yerr_train is None or yerr_test is None:
+        logger.warning("No error arrays supplied -> skipping uncertainty ribbon.")
+    else:
+        min_samples = 16
+        sigma_floor = 1.0  # micro meters, scale of data
+        q = 1  # how many sigma to show
+
+        bins = np.linspace(vmin, vmax, 30)  # 29 bins
+        centers = 0.5 * (bins[:-1] + bins[1:])
+        digit = np.digitize(y_train, bins) - 1  # 0 … 28
+
+        good_bins: list[tuple[float, float, float]] = []  # (x, mu, sigma)
+
+        for k, center in enumerate(centers):
+            mask = digit == k
+            n = mask.sum()
+            if n < min_samples:
+                continue  # skip thinly populated bins
+
+            vals = y_train_pred[mask]
+            mu = vals.mean()
+            sigma = max(vals.std(ddof=1), sigma_floor)
+
+            good_bins.append((center, mu, sigma))
+
+        # nothing to do if <2 good bins
+        if len(good_bins) < 2:
+            print(r"Not enough populated bins to compute chi^2.")
+        else:
+            x_train_np, mu_train_np, sigma_train_np = (
+                np.asarray(v, dtype=np.float64) for v in zip(*good_bins, strict=False)
+            )
+
+            # chi squared statistic
+            chi2 = np.sum(((mu_train_np - x_train_np) / sigma_train_np) ** 2)
+            dof = len(x_train_np) - 1
+            chi2_red = chi2 / dof
+            p_val = 1.0 - chi2_dist.cdf(chi2, dof)  # type: ignore
+
+            print(rf"chi / dof = {chi2:.1f} / {dof}  -> \chi^2_red = {chi2_red:.2f}")
+            print(f"p-value  = {p_val:.3f}")
+
+            # ribbon + mean line
+            ax.plot(x_train_np, mu_train_np, color="C0", lw=2, label="Train mean", zorder=4)  # type: ignore
+            ax.fill_between(  # type: ignore
+                x_train_np,
+                mu_train_np - q * sigma_train_np,
+                mu_train_np + q * sigma_train_np,
+                color="C0",
+                alpha=0.20,
+                label=rf"${{ \pm }}${q} ${{ \sigma }}$",
+                zorder=2,
+            )
+
+            # res_val = y_test_pred - y_test
+            # ax_res = fig.add_axes([0.13, 0.07, 0.68, 0.18])  # [left, bottom, width, height] # type: ignore
+            # ax_res.scatter(y_test, res_val, s=6, alpha=0.4)  # type: ignore
+            # ax_res.axhline(0, color="k", lw=1)  # type: ignore
+            # ax_res.set_xlabel("Actual (µm)")  # type: ignore
+            # ax_res.set_ylabel("Residual")  # type: ignore
+
+            # hit‑rate inside ribbon
+            sigma_bins = np.full_like(centers, np.nan)
+            for c, _, s in good_bins:
+                sigma_bins[np.argmin(np.abs(centers - c))] = s
+
+            digit_val = np.digitize(y_test, bins) - 1
+            sigma_val = sigma_bins[digit_val]
+
+            mask_val = np.isfinite(sigma_val) & (sigma_val > 0)
+            hits = np.abs(y_test_pred[mask_val] - y_test[mask_val]) < q * sigma_val[mask_val]
+            hit_rate = hits.mean() * 100
+
+            print(f"Validation MAE  : {np.abs(y_test_pred - y_test).mean():7.2f} µm")
+            print(rf"% inside +-{q} sigma ribbon (val): {hit_rate:5.1f}%")
+
+    ax.legend(loc="upper left")  # type: ignore
+    plt.tight_layout()
     if save_fig:
-        plt.tight_layout()
         fig.savefig(fname, dpi=300)  # type: ignore
         plt.close(fig)
     else:
-        plt.tight_layout()
         plt.show()  # type: ignore
 
 
@@ -176,6 +242,19 @@ def plot_amp_phase(
     nrmsd: np.float64,
     psnr: np.float64,
 ):
+    """Plot the amplitude, phase and original image all in one plot.
+
+    Args:
+        original_img: Path to the original image.
+        fresnel_amp_img: Numpy array of the reconsructed image's amplitude.
+        fresnel_phase_img: Numpy array of the reconsructed image's phase.
+        nrmsd: The average normalized root mean square error between the original and reconstructed image.
+        psnr: The average peak to signal noise ratio between the original and reconstructed image.
+
+    Returns:
+        type and description of the returned object.
+
+    """
     # temp plotting to see it works
 
     fig, axs = plt.subplots(2, 2)  # type: ignore
