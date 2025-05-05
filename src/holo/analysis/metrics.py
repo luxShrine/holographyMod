@@ -1,10 +1,9 @@
+from typing import Any
+
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import torch
-from matplotlib.axes import Axes as AxesType
-from PIL import Image
-from PIL.Image import Image as ImageType
 from scipy.stats import chi2 as chi2_dist
 from torch import Tensor
 from torch.nn import Module
@@ -24,7 +23,7 @@ def gather_z_preds(
     loader: DataLoader[tuple[Tensor, Tensor]],
     dataset: HologramFocusDataset,
     device: str,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]:
     """Combine model predictions info format appropriate for comparison.
 
     Args:
@@ -64,7 +63,21 @@ def gather_z_preds(
             z_preds = np.append(z_preds, z_pred)
             z_true = np.append(z_true, z_tgt)
 
-    return np.concatenate(z_preds, dtype=np.float64), np.concatenate(z_true, dtype=np.float64)
+    # return np.concatenate(z_preds, dtype=np.float64), np.concatenate(z_true, dtype=np.float64)
+    return np.asarray(z_preds, dtype=np.float32).ravel(), np.asarray(z_true, dtype=np.float32).ravel()
+
+
+def _wrap_phase(p: npt.NDArray[np.float32]):
+    """One liner to wrap value in pi -> - pi."""
+    return (p + np.pi) % (2 * np.pi) - np.pi
+
+
+def phase_metrics(org_phase: npt.NDArray[np.float32], recon_phase: npt.NDArray[np.float32]):
+    """Calculate the mean average error and the phase cosine similarity."""
+    diff = _wrap_phase(org_phase - recon_phase)
+    mae: float = np.abs(diff).mean()
+    cos_sim = np.mean(np.cos(diff), dtype=float)  # 1.0 → perfect match
+    return {"MAE_phase": mae, "CosSim": cos_sim}
 
 
 def error_metric(expected: npt.NDArray[np.float64], observed: npt.NDArray[np.float64], max_px: float):
@@ -138,7 +151,7 @@ def plot_actual_versus_predicted(
     ax.scatter(z_train, z_train_pred, s=6, c="C0", alpha=0.12, rasterized=True)  # type: ignore
 
     # for the validation values, use a hexbin which shows the density of points in a given region of the plot
-    hb = ax.hexbin(z_test, z_test_pred, gridsize=90, cmap="inferno", mincnt=1, bins="log", alpha=0.9, zorder=1)  # type: ignore
+    hb = ax.hexbin(z_test, z_test_pred, gridsize=70, cmap="inferno", mincnt=1, bins="log", alpha=0.9, zorder=1)  # type: ignore
     fig.colorbar(hb, ax=ax, label=r"${{ log_{10} }}$(count)")  # colorbar to indicate number of bins #type: ignore
 
     # x/y axis label, title, grid
@@ -149,8 +162,11 @@ def plot_actual_versus_predicted(
     ax.grid(True, linestyle=":")  # type: ignore
 
     # calculate nrmse, ignore the psnr for this
-    nrmse, _ = error_metric(z_test, z_test_pred, 1)
-    print(rf"Validation NRMSE : {nrmse:7.2f} µm")
+    nrmse, psnr = error_metric(z_test, z_test_pred, 1)
+    if np.isinf(psnr):
+        print("PSNR infinite (zero MSE)")
+    else:
+        print(rf"Validation NRMSE : {nrmse:7.2f} µm  PSNR: {psnr}")
 
     # uncertainty ribbon, better than having tons of error bars
     if yerr_train is None or yerr_test is None:
@@ -231,46 +247,82 @@ def plot_actual_versus_predicted(
         plt.show()  # type: ignore
 
 
+# hologram_array: Original image, cropped to match reconstruction image.
+
+
 def plot_amp_phase(
-    original_img: str,
-    fresnel_amp_img: npt.NDArray[np.float64],
-    fresnel_phase_img: npt.NDArray[np.float64],
-    nrmsd: np.float64,
-    psnr: np.float64,
+    amp_recon: npt.NDArray[Any],
+    phase_recon: npt.NDArray[Any],
+    *,
+    amp_true: npt.NDArray[Any] | None = None,
+    phase_true: npt.NDArray[Any] | None = None,
+    savepath: str = "phase_amp.png",
+    show: bool = False,
 ):
-    """Plot the amplitude, phase and original image all in one plot.
+    """Visualise amplitude & phase reconstruction.
 
     Args:
-        original_img: Path to the original image.
-        fresnel_amp_img: Numpy array of the reconsructed image's amplitude.
-        fresnel_phase_img: Numpy array of the reconsructed image's phase.
-        nrmsd: The average normalized root mean square error between the original and reconstructed image.
-        psnr: The average peak to signal noise ratio between the original and reconstructed image.
-
-    Returns:
-        type and description of the returned object.
+        amp_recon, phase_recon : arrays
+            Results from your Fresnel‑solver.
+        amp_true, phase_true : arrays or None
+            Provide these **only if** you truly know the ground‑truth field.
+            When they are None the function hides GT / error panels.
 
     """
-    # WARN: temp plotting to see it works
+    has_gt = amp_true is not None and phase_true is not None
 
-    fig, axs = plt.subplots(2, 2)  # type: ignore
-    fig.text(0.5, 0.025, f"$PSNR={psnr}$ \n $NRMS={nrmsd}$")  # type: ignore
+    if has_gt:
+        assert amp_true.shape == amp_recon.shape
+        assert phase_true.shape == phase_recon.shape
 
-    plot_amp: AxesType = axs[0, 0].imshow(fresnel_amp_img, cmap="gray")
-    axs[0, 0].set_title("Reconstructed Amplitude")
-    fig.colorbar(plot_amp, ax=axs[0, 0])  # type: ignore
+    # figure layout
+    if has_gt:
+        fig, axes = plt.subplots(2, 3, figsize=(11, 6))
+        (ax_at, ax_ar, ax_ae, ax_pt, ax_pr, ax_pe) = axes.flatten()
+    else:
+        fig, axes = plt.subplots(2, 2, figsize=(8, 6))
+        (ax_ar, ax_ae, ax_pr, ax_pe) = axes.flatten()  # only 4 axes
 
-    plot_phase: AxesType = axs[0, 1].imshow(fresnel_phase_img, cmap="gray")
-    axs[0, 1].set_title("Reconstructed Phase")
-    fig.colorbar(plot_phase, ax=axs[0, 1])  # type: ignore
+    # amplitude
+    if has_gt:
+        im0 = ax_at.imshow(amp_true, cmap="gray")
+        ax_at.set_title("Amplitude – ground‑truth")
+        fig.colorbar(im0, ax=ax_at, shrink=0.8)
 
-    hologram: ImageType = Image.open(original_img)
-    plot_holo: AxesType = axs[1, 0].imshow(hologram, cmap="gray")
-    axs[1, 0].set_title("Original Image Phase")
-    fig.colorbar(plot_holo, ax=axs[1, 0])  # type: ignore
+    im1 = ax_ar.imshow(amp_recon, cmap="gray")
+    ax_ar.set_title("Amplitude – recon")
+    fig.colorbar(im1, ax=ax_ar, shrink=0.8)
 
-    axs[1, 1].axis("off")
+    if has_gt:
+        amp_err = np.abs(amp_true - amp_recon)
+        im2 = ax_ae.imshow(amp_err, cmap="inferno")
+        ax_ae.set_title("Amplitude error")
+        fig.colorbar(im2, ax=ax_ae, shrink=0.8)
+
+    # phase
+    im4 = ax_pr.imshow(phase_recon, cmap="twilight", vmin=-np.pi, vmax=np.pi)
+    ax_pr.set_title("Phase – recon")
+    fig.colorbar(im4, ax=ax_pr, shrink=0.8)
+
+    if has_gt:
+        im3 = ax_pt.imshow(phase_true, cmap="twilight", vmin=-np.pi, vmax=np.pi)
+        ax_pt.set_title("Phase – ground‑truth")
+        fig.colorbar(im3, ax=ax_pt, shrink=0.8)
+
+        phase_err = _wrap_phase(phase_true - phase_recon)
+        im5 = ax_pe.imshow(phase_err, cmap="twilight", vmin=-np.pi, vmax=np.pi)
+        ax_pe.set_title("Phase error (wrapped)")
+        fig.colorbar(im5, ax=ax_pe, shrink=0.8)
+
+    # cosmetics
+    for ax in axes.flatten():
+        ax.set_xticks([])
+        ax.set_yticks([])
 
     plt.tight_layout()
-    plt.show()  # type: ignore
-    plt.savefig("amp_phase.png")  # type: ignore
+
+    fig.savefig(savepath, dpi=300)
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)

@@ -1,3 +1,4 @@
+LICENSE
 README.md
 pyproject.toml
 src/holo/__init__.py
@@ -13,8 +14,10 @@ src/holo/optics/__init__.py
 src/holo/optics/reconstruction.py
 src/holo/train/__init__.py
 src/holo/train/autofocus.py
+src/holo/train/autofocus_recon.py
 src/holo/util/__init__.py
 src/holo/util/crop.py
+src/holo/util/epoch_helper.py
 src/holo/util/log.py
 src/holo/util/normalize.py
 src/holo/util/saveLoad.py

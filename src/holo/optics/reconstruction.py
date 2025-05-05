@@ -1,5 +1,3 @@
-from typing import Any
-
 import numpy as np
 import numpy.typing as npt
 import torch
@@ -7,19 +5,20 @@ from PIL import Image
 from PIL.Image import Image as ImageType
 from torchvision import transforms
 
-from holo.train.autofocus import get_model
+import holo.util.epoch_helper as eh
 from holo.util.crop import crop_max_square
 
-__all__ = ["fresnel_recon", "torch_recon"]
+__all__ = ["recon_inline", "torch_recon"]
 
 
 def torch_recon(
     img_file_path: str,
     wavelength: float,
     ckpt_file: str,
-    crop_size: int = 256,
+    crop_size: int = 512,
     z: float = 300e-6,  #  TODO: implement both predictions, maybe allow choosing
     backbone: str = "efficientnet_b4",
+    dx: float = 3.8e-6,
 ):
     """Fresnel.
 
@@ -37,6 +36,9 @@ def torch_recon(
         backbone:      str,
                        Name of the pre-trained model to apply the weights to.
 
+        dx:            float,
+                       Size of pixel width (m).
+
     Returns:
         Hologram, Amplitude, phase, all as numpy arrays
 
@@ -51,7 +53,7 @@ def torch_recon(
     ckpt = torch.load(ckpt_file, map_location=device, weights_only=True)  # type: ignore
     bin_centers = ckpt["bin_centers"]
 
-    model = get_model(ckpt["num_bins"], backbone).to(device)
+    model = eh.get_model(ckpt["num_bins"], backbone).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
 
@@ -59,8 +61,9 @@ def torch_recon(
     preprocess = transforms.Compose(
         [
             transforms.Resize((crop_size, crop_size)),
+            transforms.Grayscale(num_output_channels=3),  # WARN: needed?
             transforms.ToTensor(),
-            # use the same normalization you did in train
+            # use the same normalization in train
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
@@ -69,20 +72,19 @@ def torch_recon(
     # prediction
     with torch.no_grad():
         logits = model(x)  # shape [B, C]
-        probs = torch.softmax(logits, dim=1)
+        probs = torch.softmax(logits, dim=1)  # rescales elements for range [0,1] & sum to one
 
         # discrete estimate
-        # cls = probs.argmax(1) # shape [B]
-        # z_argmax = bin_centers[cls] # depth in mm
+        cls = probs.argmax(1)  # shape [B]
+        z_argmax = bin_centers[cls]  # depth in mm
+        z_expect = z_argmax  # ⟨z⟩ = Σ p_i z_i
 
         # continuous estimate
-        z_expect = (probs * bin_centers).sum(1)  # ⟨z⟩ = Σ p_i z_i
+        # z_expect = (probs * bin_centers).sum(1)  # ⟨z⟩ = Σ p_i z_i
 
     # TODO: why float32?
-    holo_gray: npt.NDArray[np.float32] = np.asarray(crop_max_square(pil_image).convert("L"), dtype=np.float32) / 255.0
-    recon = fresnel_recon(holo_gray, dx=1e-6, wavelength=wavelength, z=float(z_expect) * 1e-3)
-    amp: npt.NDArray[np.float64] = np.abs(recon)
-    phase: npt.NDArray[Any] = np.angle(recon)
+    holo_gray = np.asarray(crop_max_square(pil_image).convert("L"), np.float32) / 255.0
+    amp, phase = recon_inline(holo_gray, wavelength=wavelength, z=float(z_expect) * 1e-3, px=dx)
 
     hologram = np.array(pil_image_crop)
     return hologram, amp, phase
@@ -98,61 +100,36 @@ def torch_recon(
 # TODO: explain the process of how to each step works mathematically
 
 
-# Fresnel transform:
-def fresnel_recon(img: npt.NDArray[np.float32], dx: float, wavelength: float, z: float) -> npt.NDArray[np.float64]:
-    """Classical numperical reconstruction via Fourier transform.
+def recon_inline(intensity: npt.NDArray[np.float32], wavelength: float, z: float, px: float):
+    """Use Fourier transform method to return reconstructed amplitdude and phase of image.
 
     Args:
-        img: hologram as numpy array
-        dx: pixel's physical size [m]
-        wavelength: wavelength of light used for imaging [nm]
-        z: propagation distance [um]
-    returns:
-        (amplitude, phase) at plane z.
+        intensity: type and description.
+        lamb: wavelength of light used.
+        z: propagation distance.
+        px: pixel size.
+
+    Returns:
+        Phase and amplitude of reconstructed image.
 
     """
-    k = (2 * np.pi) / wavelength
-    pixelX, pixelY = img.shape  # returns the dimensions of image array, x, y
-    dy = dx  # pixels assumed be of equal length/width
+    # image captures just the intensity of the object, take as complex sqrt since it is a 2D wave
+    field0 = np.sqrt(intensity).astype(np.complex64)
 
-    # create array, with each value of x, y, corresponding to pixels in image
-    # endpoint=false since we cross zero it acts as an additional index value, remove that last endpoint
-    # to make this physical, must scale by size per pixel
-    x = np.linspace(-pixelX / 2, pixelX / 2, pixelX, endpoint=False) * dx
-    y = np.linspace(-pixelY / 2, pixelY / 2, pixelY, endpoint=False) * dy
-    X, Y = np.meshgrid(x, y)  # fills in the space between these two "basis" vectors
-
-    # apply the phase factor # TODO: ?
-    # = exp((i \pi / \lambda z) (x^2 + y^2))
-    phase_factor = np.exp((1j * np.pi * (X**2 + Y**2)) / (wavelength * z))
-    image_pre = phase_factor * img
-
-    # 2d ft
-    # TODO: shift? np.fft.fftshift > ft2 > shift
-    # image_transformed = np.fft.fft2(image_pre)
-    image_transformed = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(image_pre)))
+    k = (2 * np.pi) / wavelength  # wavenumber
+    pixelX, pixelY = field0.shape  # returns the dimensions of image array, store them
+    # create arrays of size defined by image dimensions, containing sample frequencies
+    fx = np.fft.fftfreq(pixelX, d=px)
+    fy = np.fft.fftfreq(pixelY, d=px)
+    FX, FY = np.meshgrid(fx, fy)  # fills in the space between these two "basis" vectors
 
     # in the process of converting from a continuous distribution (what the image is capturing)
-    # to the discrete arrays we must limit the sampling rate, by: 0.5 * freq, where freq=(dn)^-1
-    # using the transfer function, which needs its own grid
-    fx = np.linspace(-1 / (2 * dx), 1 / (2 * dx), pixelX, endpoint=False)
-    fy = np.linspace(-1 / (2 * dy), 1 / (2 * dy), pixelY, endpoint=False)
-    FX, FY = np.meshgrid(fx, fy)
-
-    # transfer function  # TODO: ?
-    transfer_func = np.exp(-1j * np.pi * wavelength * z * (FX**2 + FY**2))
-
-    # apply the transfer  # TODO: ?
-    image_filtered = transfer_func * image_transformed
-
-    # Inverse transform to solution
-    #  TODO: shift? np.fft.fftshift > ift2 > shift
-    image_reconstruct = np.fft.fftshift(np.fft.ifft2(np.fft.ifftshift(image_filtered)))
-
-    # multiply by the phase factor again # TODO: ?
-    # multiply by the scaling factor
-    # scale_factor = np.exp(k / wavelength)
-    scale_factor = np.exp(1j * k * z) / (1j * wavelength * z)
-    image_final = image_reconstruct * scale_factor * phase_factor
-
-    return image_final
+    # to the discrete arrays we must limit the sampling rate
+    ikz = 1j * k * z
+    H = np.exp(np.sqrt(ikz - (wavelength * FX) ** 2 - (wavelength * FY) ** 2))
+    # find the 2D fft of the field, -> apply phase -> inverse 2D fft to result
+    # using the phase factor H
+    U1 = np.fft.ifft2(np.fft.fft2(field0) * H)
+    amplitdude = np.abs(U1)
+    phase = np.angle(U1)
+    return amplitdude, phase

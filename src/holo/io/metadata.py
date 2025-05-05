@@ -1,8 +1,11 @@
+import logging
 from pathlib import Path
 
 import polars as pl
 from PIL import Image
 from PIL import UnidentifiedImageError
+
+from holo.util.log import logger
 
 
 # check image is not corrupted
@@ -43,6 +46,16 @@ def correct_data_csv(path_csv_str: Path, dataset_dir: Path):
 
     # check image is not corrupted, again using PIL, thus map_elements
     proper_image_df = filtered_path_df.filter(pl.col("path").map_elements(_is_valid, pl.Boolean))
+
+    # lists how many images were dropped
+    n_bad = unfiltered_path_df.height - proper_image_df.height
+    if n_bad:
+        logger.warning("Dropped %d corrupt or non-image files", n_bad, extra={"markup": True})
+
+    # debug only, print random sample of the dataset to ensure nothing is obviously wrong
+    if logger.isEnabledFor(logging.DEBUG):
+        with pl.Config(fmt_str_lengths=50):  # make it a little longer for path
+            logger.debug(proper_image_df.sample(10, shuffle=True))
 
     # Ensure path column is treated as string
     # casted_proper_image_df = proper_image_df.with_columns(pl.col("path").cast(pl.Utf8))

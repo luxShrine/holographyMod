@@ -11,7 +11,8 @@ import holo.io.paths as paths
 import holo.optics.reconstruction as rec
 import holo.util.saveLoad as sl
 from holo.io.metadata import build_metadata_csv
-from holo.train.autofocus import train_autofocus
+from holo.train.autofocus_recon import train_autofocus
+from holo.util.crop import crop_max_square
 from holo.util.normalize import norm
 
 app = typer.Typer()
@@ -24,8 +25,8 @@ def plot_train():
     plot_info = plot_info_list[0]  # unpack list of obj
     met.plot_actual_versus_predicted(
         np.array(plot_info.y_test_pred),
-        np.array(plot_info.y_test),
         np.array(plot_info.y_train_pred),
+        np.array(plot_info.y_test),
         np.array(plot_info.y_train),
         np.array(plot_info.yerr_train),
         np.array(plot_info.yerr_test),
@@ -111,7 +112,7 @@ def reconstruction(
     backbone: str = "efficientnet_b4",
     crop_size: int = 512,
     wavelength: float = 530e-9,
-    z: float = 300e-6,
+    z: float = 20e-3,
     dx: float = 1e-6,
 ):
     """Peform reconstruction on an hologram.
@@ -121,9 +122,9 @@ def reconstruction(
         model_path: Path to trained model to use for torch optics anaylsis
         backbone: Model type being loaded
         crop_size: Pixel width and height of image
-        wavelength: Wavelength of light used to capture the image (nm)
-        z: Distance of measurement (um)
-        dx: Size of image px (um)
+        wavelength: Wavelength of light used to capture the image (m)
+        z: Distance of measurement (m)
+        dx: Size of image px (m)
 
     """
     ckpt_file = Path("checkpoints") / model_path
@@ -134,11 +135,11 @@ def reconstruction(
     recon, amp, phase = rec.torch_recon(img_file_path, wavelength, ckpt_file, crop_size, z, backbone, dx)  # type: ignore
 
     # normalize both images for comparison
-    holo_org = np.array(pil_image)
+    holo_org = np.array(crop_max_square(pil_image))  # crop, and convert to array
     n_org = norm(holo_org)
     n_recon = norm(recon)
     nrmsd, psnr = met.error_metric(n_org, n_recon, 255)
-    met.plot_amp_phase(img_file_path, amp, phase, nrmsd=nrmsd, psnr=psnr)
+    met.plot_amp_phase(amp, phase)
 
     # error
     # train_nrmsd, train_psnr = error_metric(train_tgts, train_preds, max_px)

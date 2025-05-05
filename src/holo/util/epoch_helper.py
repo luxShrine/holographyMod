@@ -1,0 +1,174 @@
+import random
+
+import numpy as np
+import torch
+import torch.nn as nn
+from rich.progress import Progress
+from rich.progress import ProgressColumn
+from rich.progress import Task
+from rich.progress import TaskID
+from rich.text import Text
+from timm import create_model  # type: ignore
+from torch import Tensor
+from torch.nn import Module
+from torch.optim import Optimizer
+from torch.utils.data import DataLoader
+from torchvision import models
+
+
+# TODO: Extract RateColumn, MetricColumn into holo/util/progress.py so other scripts can reuse the progress bars?
+class RateColumn(ProgressColumn):
+    """Custom class for creating rate column."""
+
+    def render(self, task: Task) -> Text:
+        """Render the speed of batch processing."""
+        speed = task.finished_speed or task.speed
+        if speed is None:
+            return Text("", style="progress.percentage")
+        return Text(f"{speed:.2f} batch/s", style="progress.data")
+
+
+class MetricColumn(ProgressColumn):
+    """Render any numeric field kept in task.fields (e.g. 'loss', 'acc', 'lr')."""
+
+    def __init__(self, name: str, fmt: str = "{:.4f}", style: str = "cyan"):
+        super().__init__()
+        self.name, self.fmt, self.style = name, fmt, style
+
+    def render(self, task: Task):
+        val = task.fields.get(self.name)
+        if val is None:
+            return Text("–")
+        return Text(self.fmt.format(val), style=self.style)
+
+
+def set_seed(seed: int = 42):
+    """Assign a random seed to all three backends, torch, numpy and pythons native random."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)  # type:ignore
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        # Ensure deterministic behavior for CuDNN
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+def get_model(num_classes: int, backbone: str = "efficientnet_b4"):
+    """Load a pre-trained model and adapts its final layer for the given number of classes.
+
+    Args:
+        num_classes: The number of output classes.
+        backbone: The name of the model backbone to use (e.g., 'efficientnet_b4', 'resnet50', 'vit_base_patch16_224').
+
+    Returns:
+        The PyTorch model, with the mapping of the transformation assigned.
+
+    """
+    # if type is EfficientNet | resnet | vit, load respective pre-trained model
+    if backbone.startswith("efficientnet"):
+        model = models.efficientnet_b4(weights=models.EfficientNet_B4_Weights.IMAGENET1K_V1)
+        in_feats = model.classifier[1].in_features  # size of each input sample
+        # Create the linear layer (via affine linear transformation), num_classes is the size of each output sample
+        fc = nn.Linear(in_feats, num_classes)  # type: ignore
+        # fc refers to "fully connected layer" the layer that performs the mapping of inputs to outputs
+        model.classifier[1] = fc
+    elif backbone == "resnet50":
+        model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
+        model.fc = nn.Linear(model.fc.in_features, num_classes)
+    elif backbone.startswith("vit"):
+        model = create_model("vit_base_patch16_224", pretrained=True, num_classes=num_classes)
+    else:
+        raise ValueError(f"Unknown backbone: {backbone}")
+
+    return model
+
+
+def train_epoch(
+    model: Module,
+    loader: DataLoader[tuple[Tensor, Tensor]],
+    criterion: Module,
+    optimizer: Optimizer,
+    device: str,
+    task_id: TaskID,
+    prog: Progress,
+) -> float:
+    """Trains model over one epoch.
+
+    Args:
+        model (Module): The model which ought to undergo training.
+        loader (DataLoader): Iterable that contains the portion of training dataset samples.
+        criterion (Module): Measurer of error, as prediction probability diverges, this will generate greater values.
+        optimizer (Optimizer): Algorithm used to steer the model in the correct direction.
+        device (str): Device used for training (cuda or CPU).
+        task_id (TaskID): Identifier for what task to update on with rich's progress bar.
+        prog (Progress): Which progress object to update.
+
+    Returns:
+        float: Average loss of the model after epoch completes.
+
+    """
+    model.train()
+    loss = 0
+    for imgs, labels in loader:
+        imgs, labels = imgs.to(device), labels.to(device)  # associate torch tensor with device
+
+        optimizer.zero_grad()  # reset gradients each loop
+        outputs = model(imgs).squeeze(1)  # pass in tensors of images, to get output of tensor data
+        loss_current = criterion(outputs, labels)  # find loss
+        loss_current.backward()  # compute the gradient of the loss
+        optimizer.step()  # compute one step of the optimization algorithim
+
+        loss += loss_current.item() * imgs.size(0)  # sum the value of the loss, scaled to the size of image tensor
+        prog.update(task_id, advance=1, loss=f"{loss_current.item():.4f}")  # update progress bar
+
+    # Check if loader.dataset exists and is not None before calculating length
+    dataset_len = len(loader.dataset) if loader.dataset is not None else 0
+    if dataset_len == 0:
+        return 0.0  # Return zero loss and accuracy if dataset is empty
+
+    avg_loss: float = loss / float(dataset_len)  # otherwise calcuate avg loss normally
+    return avg_loss
+
+
+def validate_epoch(
+    model: Module,
+    loader: DataLoader[tuple[Tensor, Tensor]],
+    criterion: Module,
+    device: str,
+    bin_centers,
+) -> tuple[float, float]:
+    """Validate and compute the accuracy of one epoch."""
+    model.eval()
+    loss: float = 0
+    # correct: int = 0
+    abs_err_sum: float = 0
+    total: int = 0
+
+    with torch.no_grad():  # reduces memory consumption when doing inference, as is the case for validation
+        for imgs, labels in loader:
+            imgs, labels = imgs.to(device), labels.to(device)
+            output = model(imgs).squeeze(1)
+
+            current_loss = criterion(output, labels)
+            loss += current_loss.item() * imgs.size(0)
+
+            if bin_centers is None:
+                z_pred = output
+                z_true = labels
+            else:
+                preds = output.argmax(1)
+                z_pred = torch.tensor(bin_centers, device=device)[preds]
+                z_true = torch.tensor(bin_centers, device=device)[labels]
+
+            abs_err_sum += torch.sum(torch.abs(z_pred - z_true)).item()
+            total += z_true.numel()
+
+    dataset_len = len(loader.dataset) if loader.dataset is not None else 0
+    if dataset_len == 0:
+        return 0.0, 0.0  # Return zero loss and accuracy if dataset is empty
+
+    avg_loss = loss / total
+    mae = abs_err_sum / total  # in metres if z is metres
+    return avg_loss, mae

@@ -1,198 +1,35 @@
-import os
-import random
 import time
-
-# Imports needed for type hinting
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from typing import TypeVar
 
+# import numpy.typing as npt
 import numpy as np
 import torch
-
-# import numpy.typing as npt
 import torch.nn as nn
 import torch.optim as optim
 from PIL.Image import Image as ImageType
 from rich.console import Console
 from rich.progress import BarColumn
 from rich.progress import Progress
-from rich.progress import ProgressColumn
 from rich.progress import SpinnerColumn
-from rich.progress import Task
-from rich.progress import TaskID
 from rich.progress import TaskProgressColumn
 from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 from rich.progress import TimeRemainingColumn
-from rich.text import Text
-from timm import create_model
-from torch import Tensor
-from torch.nn import Module
-from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 from torch.utils.data import Subset
 from torch.utils.data import random_split
-from torchvision import models
 from torchvision import transforms
 
 # local
+import holo.util.epoch_helper as eh
 from holo.analysis.metrics import gather_z_preds
 from holo.data.dataset import HologramFocusDataset
 from holo.util.log import logger
 from holo.util.saveLoad import plotPred
-
-# TODO: move the progress and/or helper functions to own file?
-
-
-class RateColumn(ProgressColumn):
-    """Custom class for creating rate column."""
-
-    def render(self, task: Task) -> Text:
-        """Render the speed of batch processing."""
-        speed = task.finished_speed or task.speed
-        if speed is None:
-            return Text("", style="progress.percentage")
-        return Text(f"{speed:.2f} batch/s", style="progress.data")
-
-
-class MetricColumn(ProgressColumn):
-    """Render any numeric field kept in task.fields (e.g. 'loss', 'acc', 'lr')."""
-
-    def __init__(self, name: str, fmt: str = "{:.4f}", style: str = "cyan"):
-        super().__init__()
-        self.name, self.fmt, self.style = name, fmt, style
-
-    def render(self, task: Task):
-        val = task.fields.get(self.name)
-        if val is None:
-            return Text("–")
-        return Text(self.fmt.format(val), style=self.style)
-
-
-def set_seed(seed: int = 42):
-    """Assign a random seed to all three backends, torch, numpy and pythons native random."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)  # type:ignore
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-        # Ensure deterministic behavior for CuDNN
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-
-
-def get_model(num_classes: int, backbone: str = "efficientnet_b4"):
-    """Load a pre-trained model and adapts its final layer for the given number of classes.
-
-    Args:
-        num_classes: The number of output classes.
-        backbone: The name of the model backbone to use (e.g., 'efficientnet_b4', 'resnet50', 'vit_base_patch16_224').
-
-    Returns:
-        The PyTorch model, with the mapping of the transformation assigned.
-
-    """
-    # if type is EfficientNet | resnet | vit, load respective pre-trained model
-    if backbone.startswith("efficientnet"):
-        model = models.efficientnet_b4(weights=models.EfficientNet_B4_Weights.IMAGENET1K_V1)
-        in_feats = model.classifier[1].in_features  # size of each input sample
-        # Create the linear layer (via affine linear transformation), num_classes is the size of each output sample
-        fc = nn.Linear(in_feats, num_classes)
-        # fc refers to "fully connected layer" the layer that performs the mapping of inputs to outputs
-        model.classifier[1] = fc
-    elif backbone == "resnet50":
-        model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
-        model.fc = nn.Linear(model.fc.in_features, num_classes)
-    elif backbone.startswith("vit"):
-        model = create_model("vit_base_patch16_224", pretrained=True, num_classes=num_classes)
-    else:
-        raise ValueError(f"Unknown backbone: {backbone}")
-
-    return model
-
-
-def train_epoch(
-    model: Module,
-    loader: DataLoader[tuple[Tensor, Tensor]],
-    criterion: Module,
-    optimizer: Optimizer,
-    device: str,
-    task_id: TaskID,
-    prog: Progress,
-) -> float:
-    """Trains model over one epoch.
-
-    Args:
-        model (Module): The model which ought to undergo training.
-        loader (DataLoader): Iterable that contains the portion of training dataset samples.
-        criterion (Module): Measurer of error, as prediction probability diverges, this will generate greater values.
-        optimizer (Optimizer): Algorithm used to steer the model in the correct direction.
-        device (str): Device used for training (cuda or CPU).
-        task_id (TaskID): Identifier for what task to update on with rich's progress bar.
-        prog (Progress): Which progress object to update.
-
-    Returns:
-        float: Average loss of the model after epoch completes.
-
-    """
-    model.train()
-    loss = 0
-    for imgs, labels in loader:
-        imgs, labels = imgs.to(device), labels.to(device)  # associate torch tensor with device
-
-        optimizer.zero_grad()  # reset gradients each loop
-        outputs = model(imgs)  # pass in tensors of images, to get output of tensor data
-        loss_current = criterion(outputs, labels)  # find loss
-        loss_current.backward()  # compute the gradient of the loss
-        optimizer.step()  # compute one step of the optimization algorithim
-
-        loss += loss_current.item() * imgs.size(0)  # sum the value of the loss, scaled to the size of image tensor
-        prog.update(task_id, advance=1, loss=f"{loss_current.item():.4f}")  # update progress bar
-
-    # Check if loader.dataset exists and is not None before calculating length
-    dataset_len = len(loader.dataset) if loader.dataset is not None else 0
-    if dataset_len == 0:
-        return 0.0  # Return zero loss and accuracy if dataset is empty
-
-    avg_loss: float = loss / float(dataset_len)  # otherwise calcuate avg loss normally
-    return avg_loss
-
-
-# TODO: <04-27-25>
-def validate_epoch(
-    model: Module, loader: DataLoader[tuple[Tensor, Tensor]], criterion: Module, device: str
-) -> tuple[float, float]:
-    """Validate and compute the accuracy of one epoch."""
-    model.eval()
-    loss: float = 0
-    correct: int = 0
-    total: int = 0
-
-    with torch.no_grad():  # reduces memory consumption when doing inference, as is the case for validation
-        for imgs, labels in loader:
-            imgs, labels = imgs.to(device), labels.to(device)
-            output = model(imgs)
-
-            current_loss = criterion(output, labels)
-            loss += current_loss.item() * imgs.size(0)
-
-            preds = output.argmax(dim=1)
-            # Ensure comparison is appropriate if labels are not single integers per sample
-            # WARN: If labels have a different shape, total calculation might need adjustment
-            correct += (preds == labels).sum().item()
-            total += labels.numel()  # Use numel() for total elements
-
-    dataset_len = len(loader.dataset) if loader.dataset is not None else 0
-    if dataset_len == 0:
-        return 0.0, 0.0  # Return zero loss and accuracy if dataset is empty
-
-    avg_loss = loss / float(dataset_len)
-    acc = correct / total if total > 0 else 0.0  # Ensure total is not zero before division
-    return avg_loss, acc
 
 
 def train_autofocus(
@@ -226,8 +63,8 @@ def train_autofocus(
         device: Computing device ('cuda' or 'cpu').
 
     """
-    set_seed(seed)
-    os.makedirs(out_dir, exist_ok=True)  # ensure that the output directory exists, if not, create it
+    eh.set_seed(seed)
+    Path(out_dir).mkdir(exist_ok=True)  # ensure that the output directory exists, if not, create it
     path_to_checkpoint: Path = Path(out_dir) / Path("latest_checkpoint.pth")
     path_to_model: Path = Path(out_dir) / Path("best_model.pth")
 
@@ -239,9 +76,10 @@ def train_autofocus(
         device = "cpu"
     logger.info(f"Using device: {device}")
 
-    # TODO: <04-27-25>
+    # TODO: If holograms are single‑channel, swap to transforms.Grayscale(num_output_channels=3) before normalizing
+    # TODO: make a function to detect if one-channel?
+
     # Define Transforms
-    # Note: Adjust normalization mean/std if holograms are single-channel or have different stats
     train_transform = transforms.Compose(
         [
             # crop image down to appropriate size for transform could use RandomResizedCrop
@@ -249,10 +87,9 @@ def train_autofocus(
             # to ensure no bias for certain orientations, flip around
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
-            # TODO: Add other relevant augmentations if needed
+            # TODO: Add other relevant augmentations
             transforms.ToTensor(),  # convert to tensor
             # Assuming 3-channel conversion, each model has its own desired normalization
-            # TODO: make a function to detect if black and white thus needing one-channel
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             # transforms.Normalize(mean=[0.5], std=[0.5]),
         ]
@@ -266,24 +103,22 @@ def train_autofocus(
         ]
     )
 
-    # TODO: <04-27-25>?
-    # Prepare Datasets + Data Loaders
-    full_dataset = HologramFocusDataset(
-        hologram_dir, metadata_csv, crop_size
-    )  # Pass crop_size if needed by Dataset internals, transforms handle final size
-    num_classes = full_dataset.num_bins  # Assuming dataset calculates this
+    # Prepare Dataset
+    full_dataset = HologramFocusDataset(hologram_dir, metadata_csv, crop_size)
+    num_classes = full_dataset.num_bins
+    # Splits index into validation and train
     val_size: int = int(val_split * len(full_dataset))
     train_size: int = len(full_dataset) - val_size
 
-    # TODO: <04-27-25>?
+    # generic type variables needed
     _T = TypeVar("_T")
     _T_co = TypeVar("_T_co", covariant=True)
 
+    # assigns the images randomly to each subset based on intended ratio
     train_ds_untransformed, val_ds_untransformed = random_split(full_dataset, [train_size, val_size])
 
-    # TODO: <04-27-25>?
-    # Apply transforms - Create wrapper datasets to avoid modifying HologramFocusDataset to accept transform
-    class TransformedDataset(Dataset[tuple[Any, Any]]):  # Use the TypeVar for the return type
+    # Apply transforms by creating a wrapper dataset to avoid modifying original HologramFocusDataset
+    class TransformedDataset(Dataset[tuple[Any, Any]]):
         def __init__(self, subset: Subset[_T_co], transform: Callable[[Any], Any] | None):
             """Initialize the TransformedDataset.
 
@@ -308,30 +143,28 @@ def train_autofocus(
                                  depend on the subset and the transform.
 
             """
-            # Type hints for x, y depend on what subset.__getitem__ returns
-            x, y = self.subset[index]
+            x, y = self.subset[index]  # type: ignore
             if self.transform:
-                # TODO:
-                # Assuming transform applies to x
+                # Transform applies to x
                 x = self.transform(x)  # Type of x might change here
-            # The return type depends on the type of y and the type of x after transformation
-            return x, y
+            return x, y  # type: ignore
 
         def __len__(self) -> int:
             """Return the total number of items in the dataset."""
-            return len(self.subset)
+            return len(self.subset)  # type: ignore
 
-        def __getattr__(self, name):
-            """Forward attribute look-ups we don't have to the underlying dataset, so items can be extracted."""
+        def __getattr__(self, name: str):
+            """Forward attribute look-ups to the underlying dataset, so items can be extracted."""
             try:
-                return getattr(self.subset.dataset, name)
-            except AttributeError as e:  # keep the default behaviour
+                return getattr(self.subset.dataset, name)  # type: ignore
+            except AttributeError as e:
                 raise AttributeError(name) from e
 
     # Assign the transformed datasets
     train_ds: TransformedDataset = TransformedDataset(train_ds_untransformed, train_transform)
     val_ds: TransformedDataset = TransformedDataset(val_ds_untransformed, val_transform)
 
+    # create data loaders, which just allow the input of data to be iteratively called
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
@@ -348,12 +181,12 @@ def train_autofocus(
     )
 
     # Build model
-    model = get_model(num_classes, backbone).to(device)
+    model = eh.get_model(num_classes, backbone).to(device)
 
-    # TODO: <04-27-25>
     # Loss & optimizer
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss()  # measures of error
     optimizer = optim.Adam(model.parameters(), lr=lr)  # common optimization algorithm, adapts learning rates
+    # automatically reduces learning rate as metric slows down its improvement
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.1, patience=5)
 
     # setup progress monitoring
@@ -363,12 +196,12 @@ def train_autofocus(
         BarColumn(bar_width=None),
         TaskProgressColumn(),  #  number completed
         TimeElapsedColumn(),  #  how long it has been
-        RateColumn(),  #   how fast batch speed
+        eh.RateColumn(),  #   how fast batch speed
         TimeRemainingColumn(),  #  ETA
-        MetricColumn("batch_loss"),
-        MetricColumn("avg_loss", style="magenta"),
-        MetricColumn("val_loss", style="yellow"),
-        MetricColumn("val_acc", fmt="{:.2%}", style="green"),
+        eh.MetricColumn("batch_loss"),
+        eh.MetricColumn("avg_loss", style="magenta"),
+        eh.MetricColumn("val_loss", style="yellow"),
+        eh.MetricColumn("val_acc", fmt="{:.2%}", style="green"),
         # MetricColumn("lr", fmt="{:.2e}", style="bright_black"),
         SpinnerColumn(),  # shows in progress tasks
         console=console,
@@ -393,11 +226,11 @@ def train_autofocus(
             progress.reset(batch_task, total=len(train_loader), batch_loss=0, avg_loss=0)
 
             # Train
-            epoch_train_loss = train_epoch(model, train_loader, criterion, optimizer, device, batch_task, progress)
+            epoch_train_loss = eh.train_epoch(model, train_loader, criterion, optimizer, device, batch_task, progress)
             # validate
 
             # logger.info("Beginning Validation...")
-            epoch_val_loss, epoch_acc = validate_epoch(model, val_loader, criterion, device)
+            epoch_val_loss, epoch_acc = eh.validate_epoch(model, val_loader, criterion, device)
 
             # go to next step
             scheduler.step(epoch_acc)  # Step scheduler based on validation metric # type:ignore
@@ -455,8 +288,14 @@ def train_autofocus(
     logger.info(f"Training complete. Best Val Acc: {best_acc:.4f}")
     loss_hist = [train_loss, val_loss]  # return the history
 
-    train_z_pred, train_z_true = gather_z_preds(model, train_loader, train_ds, device)
-    val_z_pred, val_z_true = gather_z_preds(model, val_loader, val_ds, device)
+    train_z_pred, train_z_true = gather_z_preds(model, train_loader, train_ds, device)  # type: ignore
+    val_z_pred, val_z_true = gather_z_preds(model, val_loader, val_ds, device)  # type: ignore
+
+    # WARN: potentially incorrect typing
+    val_z_pred_list = val_z_pred.tolist()
+    train_z_pred_list = train_z_pred.tolist()
+    val_z_true_list = val_z_true.tolist()
+    train_z_true_list = train_z_true.tolist()
 
     # WARN: debug
     print("unique train preds:", np.unique(train_z_pred)[:10], "…")
@@ -469,10 +308,10 @@ def train_autofocus(
 
     # save training data for plotting
     plot_data_obj = plotPred(
-        val_z_pred.tolist(),
-        val_z_true.tolist(),
-        train_z_pred.tolist(),
-        train_z_true.tolist(),
+        val_z_pred_list,
+        train_z_pred_list,
+        val_z_true_list,
+        train_z_true_list,
         train_err.tolist(),
         val_err.tolist(),
         "Actual vs Predicted Focus (µm)",

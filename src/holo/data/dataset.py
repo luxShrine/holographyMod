@@ -1,16 +1,23 @@
+import logging
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-import numpy.typing as npt
 import polars as pl
+import torch
 from PIL import Image
 from PIL.Image import Image as ImageType
 from rich.pretty import pprint
 from torch.utils.data import Dataset
 
+import holo.io.paths as paths
 from holo.io.metadata import correct_data_csv
+from holo.util.crop import crop_max_square
 from holo.util.log import logger
+
+HOLO_DEF = paths.MW_data()  # prevents call in class
+
+# TODO: create helper like paths for keeping units consistent
 
 
 class HologramFocusDataset(Dataset[tuple[ImageType, int]]):
@@ -18,10 +25,10 @@ class HologramFocusDataset(Dataset[tuple[ImageType, int]]):
 
     def __init__(
         self,
-        hologram_dir: Path,
-        metadata_csv: str,
+        hologram_dir: Path = HOLO_DEF,
+        metadata_csv: str = "ODP-DLHM-Database.csv",
         crop_size: int = 512,
-        class_steps: float = 10,
+        class_steps: float = 5,
     ) -> None:
         """Assign properties to hologram dataset.
 
@@ -34,35 +41,56 @@ class HologramFocusDataset(Dataset[tuple[ImageType, int]]):
         """
         # my hologram dataset is a subclass of the torch.utils.data Dataset, this allows initializing both classes
         super().__init__()
-        self.crop_size: int = crop_size  # assign the crop size
-        self.class_steps: float = class_steps / 1000  # convert um -> mm per bin
+        # assign initialized items
         self.hologram_dir: Path = hologram_dir  # Store path for hologram directory
         self.metadata_csv_path_str: str = metadata_csv  # Store metadata csv name
+        self.crop_size: int = crop_size  # assign the crop size
+        # self.class_steps: float = class_steps * 1e6  # convert um -> m per bin
 
         path_to_csv: Path = self.hologram_dir / self.metadata_csv_path_str
-        unfiltered_df: pl.DataFrame = pl.read_csv(path_to_csv, separator=";")  # read metadata CSV
-        # cleanup data remove bad images, bad paths
+        # cleanup data remove bad images, bad paths, records is where all the csv data is
         self.records: pl.DataFrame = correct_data_csv(path_to_csv, self.hologram_dir)
 
-        # lists how many images were dropped
-        n_bad = unfiltered_df.height - self.records.height
-        if n_bad:
-            logger.warning("Dropped %d corrupt or non-image files", n_bad, extra={"markup": True})
+        # Now build all attributes from the filtered DataFrame:
+        self.files = self.records["path"].to_list()
+        self.z = (self.records["z_value"].to_numpy() * 1e-3).astype(np.float32)  # mm -> m
+        self.wavelength = (self.records["Wavelength"].to_numpy() * 1e-6).astype(np.float32)  # um -> m
 
-        # debug only, print random sample of the dataset to ensure nothing is obviously wrong
-        if logger.isEnabledFor(2):
-            with pl.Config(fmt_str_lengths=50):  # make it a little longer for path
-                pprint(self.records.sample(10, shuffle=True))
+        # build bins
+        z_mm = self.z * 1e3
+        # get unique positions in mm
+        uniq = np.unique(z_mm)
+        # compute min non-zero step (in mm)
+        diffs = np.diff(uniq)
+        step_mm = float(np.min(diffs[diffs > 0]))
+        step_m = step_mm * 1e-3
+        step_m_mod = step_m * 100  # increase to make training coarser
+        self.class_steps: float = step_m_mod  # convert to m
 
-        # build class bins
-        min_z: float = self.records.select(pl.min("z_value")).item()
-        max_z: float = self.records.select(pl.max("z_value")).item()
+        # build bin edges at exactly each z-position
+        self.bin_edges = np.arange(self.z.min(), self.z.max() + step_m_mod, step_m_mod, dtype=np.float64)
 
-        # Ensure max_z is included in the bins
-        bin_edges: npt.NDArray[np.float64] = np.arange(min_z, max_z + self.class_steps, self.class_steps, float)
-        self.num_bins: int = len(bin_edges) - 1
-        self.bin_edges = bin_edges
-        self.bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])  # keep for use in plotting function
+        self.bin_centers = 0.5 * (self.bin_edges[:-1] + self.bin_edges[1:])
+        self.num_bins = len(self.bin_centers)
+
+        self.px = np.full_like(self.z, 3e-6, dtype=np.float32)  # NOTE: constant pixel size
+
+        # check that the bins are reasonable
+        if logger.isEnabledFor(logging.DEBUG):
+            min_z: float = self.z.min()
+            max_z: float = self.z.max()
+            logger.debug(
+                f"min z: {min_z}, max z: {max_z}, bin edges {self.bin_edges}, \
+                edges length: {len(self.bin_edges)} current file: {__file__}"
+            )
+        # # Ensure max_z is included in the bins
+        # self.bin_edges: npt.NDArray[np.float64] = np.arange(min_z, max_z + self.class_steps, self.class_steps, float)
+        # bin_edges = np.arange(min_z, max_z + self.class_steps, self.class_steps, float)
+        #
+        #
+        # self.num_bins: int = len(self.bin_edges) - 1
+        # self.bin_edges = self.bin_edges
+        # self.bin_centers = 0.5 * (self.bin_edges[:-1] + self.bin_edges[1:])  # keep for use in plotting function
 
     def __len__(self) -> int:
         """Return the total number of items in the dataset."""
@@ -105,3 +133,40 @@ class HologramFocusDataset(Dataset[tuple[ImageType, int]]):
 
         # return the image, and a new instance of the class
         return img_pil, cls
+
+
+class HQDLHMDataset(HologramFocusDataset):
+    """Loads HQ-DLHM-OD holograms.
+
+    Returns: (tensor[1,H,W], float‑z [m], float‑λ [m], float‑px [m]).
+    """
+
+    def __init__(self, metadata_csv: str, crop: int = 224):
+        super().__init__(metadata_csv=metadata_csv, crop_size=crop)  # inherit
+        # edges = np.arange(self.z.min(), self.z.max() + self.class_steps, self.class_steps)
+        bin_ids = np.digitize(self.z, self.bin_edges) - 1
+        bin_ids = np.clip(bin_ids, 0, self.num_bins - 1)
+        self.bin_ids = torch.tensor(bin_ids, dtype=torch.long)
+        self.bin_centers = 0.5 * (self.bin_edges[:-1] + self.bin_edges[1:])  # keep for use in plotting function
+
+        self.crop = crop
+
+    def __getitem__(self, idx: int) -> tuple[ImageType, float, float, float]:  # type: ignore[override]
+        """Overide default dataset indexing to retrieve the image, and its relevant attributes.
+
+        Returns:
+           (image_tensor[1,H,W], z [m], wavelength [m], pixel_size [m]).
+
+        """
+        # 1) load hologram as PIL.Image
+        record_row: dict[str, Any] = self.records.row(idx, named=True)
+        relative_path = record_row["path"]  # Extract string path value
+
+        # NOTE: This assumes that the CSV file lists the holograms as relative to itself
+        img_path = self.hologram_dir / relative_path
+        img = Image.open(img_path).convert("L")
+        # 2) optional center-crop via your util
+        if self.crop:
+            img = crop_max_square(img)
+        # 3) return the PIL image, not a tensor
+        return img, self.z[idx], self.wavelength[idx], self.px[idx]

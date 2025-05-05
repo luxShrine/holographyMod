@@ -1,0 +1,6 @@
+3ep:
+Validation NRMSE :    0.10 µm
+chi^2 / dof = 2.3 / 16 -> chi^2_red = 0.14
+p-value  = 1.000
+Validation MAE  :   86.50 µm
+% inside +-1 sigma ribbon (val):  64.7%
