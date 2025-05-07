@@ -10,7 +10,7 @@ from torch.nn import Module
 from torch.utils.data import DataLoader
 
 from holo.data.dataset import HologramFocusDataset
-from holo.io.output import validate_bins
+from holo.util.output import validate_bins
 from holo.util.log import logger
 
 # WARN: backend setting, should be temporary fix

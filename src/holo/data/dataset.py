@@ -10,10 +10,10 @@ from PIL.Image import Image as ImageType
 from rich.pretty import pprint
 from torch.utils.data import Dataset
 
-import holo.io.paths as paths
-from holo.io.metadata import correct_data_csv
+import holo.util.paths as paths
 from holo.util.crop import crop_max_square
 from holo.util.log import logger
+from holo.util.metadata import correct_data_csv
 
 HOLO_DEF = paths.MW_data()  # prevents call in class
 
