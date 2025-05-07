@@ -5,7 +5,7 @@ from PIL import Image
 from PIL.Image import Image as ImageType
 from torchvision import transforms
 
-import holo.util.epoch_helper as eh
+import holo.train.epoch_helper as eh
 from holo.util.crop import crop_max_square
 
 __all__ = ["recon_inline", "torch_recon"]
