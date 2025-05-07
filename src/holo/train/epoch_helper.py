@@ -1,45 +1,89 @@
 import random
 
 import numpy as np
-import torch
-import torch.nn as nn
-from rich.progress import Progress
-from rich.progress import ProgressColumn
-from rich.progress import Task
-from rich.progress import TaskID
-from rich.text import Text
 from timm import create_model  # type: ignore
+from torchvision import models
+import torch.nn as nn
+import torch
+from rich.console import Console
+from rich.progress import BarColumn
+from rich.progress import Progress
+from rich.progress import SpinnerColumn
+from rich.progress import TaskID
+from rich.progress import TaskProgressColumn
+from rich.progress import TextColumn
+from rich.progress import TimeElapsedColumn
+from rich.progress import TimeRemainingColumn
 from torch import Tensor
 from torch.nn import Module
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
-from torchvision import models
+
+from holo.util.log import logger
+from holo.util.prog_helper import MetricColumn
+from holo.util.prog_helper import RateColumn
 
 
-# TODO: Extract RateColumn, MetricColumn into holo/util/progress.py so other scripts can reuse the progress bars?
-class RateColumn(ProgressColumn):
-    """Custom class for creating rate column."""
+def setup_rich_progress(train_type: str):
+    """Setup progress monitoring for epoch."""
+    if train_type == "reg":
+        accuracy_measure = "val_mae"
+    elif train_type == "class":
+        accuracy_measure = "val_acc"
+    else:
+        logger.exception(f"Failed to process training type of {train_type}, assuming type is regression.")
+        accuracy_measure = "val_mae"
 
-    def render(self, task: Task) -> Text:
-        """Render the speed of batch processing."""
-        speed = task.finished_speed or task.speed
-        if speed is None:
-            return Text("", style="progress.percentage")
-        return Text(f"{speed:.2f} batch/s", style="progress.data")
+    console = Console()  # allows rich to automatically set certain items depending on terminal
+    progress = Progress(
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(bar_width=None),
+        TaskProgressColumn(),  #  number completed
+        TimeElapsedColumn(),  #  how long it has been
+        RateColumn(),  #   batch speed
+        TimeRemainingColumn(),  #  ETA
+        # eh.MetricColumn("batch_loss"),
+        MetricColumn("avg_loss", style="magenta"),
+        MetricColumn("val_loss", style="yellow"),
+        MetricColumn(accuracy_measure, fmt="{:.2%}", style="green"),
+        MetricColumn("lr", fmt="{:.2e}", style="bright_black"),
+        SpinnerColumn(),  # shows in progress tasks
+        console=console,
+        transient=False,  # keep the bars on screen after finishing
+    )
+    return progress
 
+def get_model(num_classes: int = 1, backbone: str = "efficientnet_b4"):
+    """Load a pre-trained model and adapts its final layer for the given number of classes.
 
-class MetricColumn(ProgressColumn):
-    """Render any numeric field kept in task.fields (e.g. 'loss', 'acc', 'lr')."""
+    Args:
+        num_classes: The number of output classes.
+        backbone: The name of the model backbone to use (e.g., 'efficientnet_b4', 'resnet50', 'vit_base_patch16_224').
 
-    def __init__(self, name: str, fmt: str = "{:.4f}", style: str = "cyan"):
-        super().__init__()
-        self.name, self.fmt, self.style = name, fmt, style
+    Returns:
+        The PyTorch model, with the mapping of the transformation assigned.
 
-    def render(self, task: Task):
-        val = task.fields.get(self.name)
-        if val is None:
-            return Text("–")
-        return Text(self.fmt.format(val), style=self.style)
+    """
+    known_backbones = ["efficientnet", "resnet50", "vit"]
+    # if type is EfficientNet | resnet | vit, load respective pre-trained model
+    if backbone.startswith("efficientnet"):
+        selected_model = models.efficientnet_b4(weights=models.EfficientNet_B4_Weights.IMAGENET1K_V1)
+        in_feats = selected_model.classifier[1].in_features  # size of each input sample
+        # Create the linear layer (via affine linear transformation), num_classes is the size of each output sample
+        fc = nn.Linear(in_feats, num_classes)  # type: ignore
+        # fc refers to "fully connected layer" the layer that performs the mapping of inputs to outputs
+        selected_model.classifier[1] = fc
+    elif backbone == "resnet50":
+        selected_model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
+        selected_model.fc = nn.Linear(selected_model.fc.in_features, num_classes)
+    elif backbone.startswith("vit"):
+        selected_model = create_model("vit_base_patch16_224", pretrained=True, num_classes=num_classes)
+    else:
+        raise NameError(
+            logger.exception(f"Unknown backbone: {backbone}, known backbones include: "), print_list(known_backbones)
+        )
+
+    return selected_model
 
 
 def set_seed(seed: int = 42):
@@ -53,36 +97,6 @@ def set_seed(seed: int = 42):
         # Ensure deterministic behavior for CuDNN
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-
-
-def get_model(num_classes: int, backbone: str = "efficientnet_b4"):
-    """Load a pre-trained model and adapts its final layer for the given number of classes.
-
-    Args:
-        num_classes: The number of output classes.
-        backbone: The name of the model backbone to use (e.g., 'efficientnet_b4', 'resnet50', 'vit_base_patch16_224').
-
-    Returns:
-        The PyTorch model, with the mapping of the transformation assigned.
-
-    """
-    # if type is EfficientNet | resnet | vit, load respective pre-trained model
-    if backbone.startswith("efficientnet"):
-        model = models.efficientnet_b4(weights=models.EfficientNet_B4_Weights.IMAGENET1K_V1)
-        in_feats = model.classifier[1].in_features  # size of each input sample
-        # Create the linear layer (via affine linear transformation), num_classes is the size of each output sample
-        fc = nn.Linear(in_feats, num_classes)  # type: ignore
-        # fc refers to "fully connected layer" the layer that performs the mapping of inputs to outputs
-        model.classifier[1] = fc
-    elif backbone == "resnet50":
-        model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
-        model.fc = nn.Linear(model.fc.in_features, num_classes)
-    elif backbone.startswith("vit"):
-        model = create_model("vit_base_patch16_224", pretrained=True, num_classes=num_classes)
-    else:
-        raise ValueError(f"Unknown backbone: {backbone}")
-
-    return model
 
 
 def train_epoch(
@@ -111,6 +125,9 @@ def train_epoch(
     """
     model.train()
     loss = 0
+    for n, p in model.named_parameters():
+        if "head" not in n and "classifier" not in n:
+            p.requires_grad = False  # first 3 epochs
     for imgs, labels in loader:
         imgs, labels = imgs.to(device), labels.to(device)  # associate torch tensor with device
 
@@ -137,7 +154,7 @@ def validate_epoch(
     loader: DataLoader[tuple[Tensor, Tensor]],
     criterion: Module,
     device: str,
-    bin_centers,
+    # bin_centers,
 ) -> tuple[float, float]:
     """Validate and compute the accuracy of one epoch."""
     model.eval()
@@ -154,13 +171,8 @@ def validate_epoch(
             current_loss = criterion(output, labels)
             loss += current_loss.item() * imgs.size(0)
 
-            if bin_centers is None:
-                z_pred = output
-                z_true = labels
-            else:
-                preds = output.argmax(1)
-                z_pred = torch.tensor(bin_centers, device=device)[preds]
-                z_true = torch.tensor(bin_centers, device=device)[labels]
+            z_pred = output
+            z_true = labels
 
             abs_err_sum += torch.sum(torch.abs(z_pred - z_true)).item()
             total += z_true.numel()
@@ -171,4 +183,6 @@ def validate_epoch(
 
     avg_loss = loss / total
     mae = abs_err_sum / total  # in metres if z is metres
+    logger.debug(f"Val MAE : {mae * 1e6:.2f} µm")  # convert metres → µm
+    # TODO: make work for class vs reg <luxShrine >
     return avg_loss, mae
