@@ -7,12 +7,14 @@ from PIL import Image
 from PIL.Image import Image as ImageType
 
 import holo.analysis.metrics as met
-import holo.io.paths as paths
 import holo.optics.reconstruction as rec
+import holo.util.paths as paths
 import holo.util.saveLoad as sl
-from holo.io.metadata import build_metadata_csv
-from holo.train.autofocus_recon import train_autofocus
+from holo.train.auto_caller import train_autofocus_refactored
+from holo.train.auto_classes import AutoConfig
 from holo.util.crop import crop_max_square
+from holo.util.log import logger
+from holo.util.metadata import build_metadata_csv
 from holo.util.normalize import norm
 
 app = typer.Typer()
@@ -81,20 +83,22 @@ def train(
     if ds_root.exists():
         pass
     else:
+        logger.warning(f"Path {ds_root} does not exist, defaulting to {paths.MW_data()}")
         ds_root = paths.MW_data()
 
-    _, _, plot_info = train_autofocus(
-        hologram_dir=ds_root,
-        metadata_csv=metadata,
+    autofocus_config = AutoConfig(
         out_dir=out,
+        meta_csv_name=metadata,
         backbone=backbone,
         batch_size=batch,
-        epochs=ep,
+        epoch_count=ep,
         crop_size=crop,
-        lr=learn_rate,
+        opt_lr=learn_rate,
         val_split=value_split,
-        device=device_type,
+        device_user=device_type,
     )
+
+    _, _, plot_info = train_autofocus_refactored(autofocus_config)
 
     sl.save_obj(plot_info)
 
