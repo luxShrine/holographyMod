@@ -25,6 +25,7 @@ class HologramFocusDataset(Dataset[tuple[ImageType, int]]):
 
     def __init__(
         self,
+        mode: str = "reg",
         hologram_dir: Path = HOLO_DEF,
         metadata_csv: str = "ODP-DLHM-Database.csv",
         crop_size: int = 512,
@@ -33,6 +34,7 @@ class HologramFocusDataset(Dataset[tuple[ImageType, int]]):
         """Assign properties to hologram dataset.
 
         Args:
+        mode (str): Classification or regression type anaylisis for autofocus model.
         hologram_dir (Path): Base directory used to find relevant paths.
         metadata_csv (str): Path to CSV that maps images to properties, z distance and wavelength.
         crop_size (int): What size to crop image to.
@@ -42,6 +44,7 @@ class HologramFocusDataset(Dataset[tuple[ImageType, int]]):
         # my hologram dataset is a subclass of the torch.utils.data Dataset, this allows initializing both classes
         super().__init__()
         # assign initialized items
+        self.mode: str = mode
         self.hologram_dir: Path = hologram_dir  # Store path for hologram directory
         self.metadata_csv_path_str: str = metadata_csv  # Store metadata csv name
         self.crop_size: int = crop_size  # assign the crop size
@@ -122,17 +125,22 @@ class HologramFocusDataset(Dataset[tuple[ImageType, int]]):
             pprint(f"Error loading image {absolute_csv_path}: {e}")
             raise  # raise any PIL errors
 
-        z_value: float = record_row["z_value"]  # generate class label from z_value
+        # if regression, use a continuous z value
+        if self.mode == "reg":
+            z_val = self.z[idx]
+            return img_pil, z_val
+        else:
+            # if classification, we need the object
+            z_value: float = record_row["z_value"]  # generate class label from z_value
+            # np.digitize returns indices of the bins to which each value of z belongs
+            # it starts from 1 thus -1 for 0-based index
+            cls_dig = np.digitize(z_value, self.bin_edges) - 1
+            # assign these values
+            # clip to ensure label is 0 <= label <= (number of bins - 1)
+            cls = int(np.clip(cls_dig, 0, self.num_bins - 1))  # Ensure integer type
 
-        # np.digitize returns indices of the bins to which each value of z belongs
-        # it starts from 1 thus -1 for 0-based index
-        cls_dig = np.digitize(z_value, self.bin_edges) - 1
-        # assign these values
-        # clip to ensure label is 0 <= label <= (number of bins - 1)
-        cls = int(np.clip(cls_dig, 0, self.num_bins - 1))  # Ensure integer type
-
-        # return the image, and a new instance of the class
-        return img_pil, cls
+            # return the image, and a new instance of the class
+            return img_pil, cls
 
 
 class HQDLHMDataset(HologramFocusDataset):
@@ -141,13 +149,14 @@ class HQDLHMDataset(HologramFocusDataset):
     Returns: (tensor[1,H,W], float‑z [m], float‑λ [m], float‑px [m]).
     """
 
-    def __init__(self, metadata_csv: str, crop: int = 224):
+    def __init__(self, metadata_csv: str, crop: int = 224, mode: str = "reg"):
         super().__init__(metadata_csv=metadata_csv, crop_size=crop)  # inherit
         # edges = np.arange(self.z.min(), self.z.max() + self.class_steps, self.class_steps)
         bin_ids = np.digitize(self.z, self.bin_edges) - 1
         bin_ids = np.clip(bin_ids, 0, self.num_bins - 1)
         self.bin_ids = torch.tensor(bin_ids, dtype=torch.long)
         self.bin_centers = 0.5 * (self.bin_edges[:-1] + self.bin_edges[1:])  # keep for use in plotting function
+        self.mode = mode
 
         self.crop = crop
 
