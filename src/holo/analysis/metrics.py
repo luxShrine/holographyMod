@@ -10,8 +10,8 @@ from torch.nn import Module
 from torch.utils.data import DataLoader
 
 from holo.data.dataset import HologramFocusDataset
-from holo.util.output import validate_bins
 from holo.util.log import logger
+from holo.util.output import validate_bins
 
 # WARN: backend setting, should be temporary fix
 # import matplotlib
@@ -20,6 +20,7 @@ from holo.util.log import logger
 
 def gather_z_preds(
     model: Module,
+    analysis: str,
     loader: DataLoader[tuple[Tensor, Tensor]],
     dataset: HologramFocusDataset,
     device: str,
@@ -47,23 +48,26 @@ def gather_z_preds(
 
             out = model(x)  # pass in data to model
 
-            # pick the form that matches network
-            if out.ndim == 2:
-                # if model outputs 2D tensor of scores/probabilities, set to 1D
-                cls_pred = out.argmax(dim=1).cpu()
-            else:
-                # if model outputs tensor already including an index, "squeeze" out anything but the data
-                cls_pred = out.squeeze().cpu().long()
-
             # convert z to um from object parameters
-            z_pred = dataset.bin_centers[cls_pred.numpy()] * 1000
-            z_tgt = dataset.bin_centers[y.cpu().numpy()] * 1000
+            if analysis == "reg":  # float outputs are depth in meters
+                z_pred = out.cpu().numpy() * 1e3  # -> um for plotting
+                z_tgt = y.cpu().numpy() * 1e3
+            else:  # class -> bin index
+                # pick the form that matches network
+                if out.ndim == 2:
+                    # if model outputs 2D tensor of scores/probabilities, set to 1D
+                    cls_pred = out.argmax(dim=1).cpu()
+                else:
+                    # if model outputs tensor already including an index, "squeeze" out anything but the data
+                    cls_pred = out.squeeze().cpu().long()
+                    cls_pred = out.argmax(1).cpu()
+                z_pred = dataset.bin_centers[cls_pred.numpy()] * 1e3
+                z_tgt = dataset.bin_centers[y.cpu().numpy()] * 1e3
 
             # store each of these values
             z_preds = np.append(z_preds, z_pred)
             z_true = np.append(z_true, z_tgt)
 
-    # return np.concatenate(z_preds, dtype=np.float64), np.concatenate(z_true, dtype=np.float64)
     return np.asarray(z_preds, dtype=np.float32).ravel(), np.asarray(z_true, dtype=np.float32).ravel()
 
 
