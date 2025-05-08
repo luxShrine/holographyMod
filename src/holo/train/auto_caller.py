@@ -1,4 +1,5 @@
 import logging
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -61,6 +62,7 @@ def _get_transformation(crop: int, gray: bool):
 
 def _setup_dataloaders(
     meta_csv_name: str,
+    auto_method: str,
     num_workers: int = 4,
     batch_size: int = 16,
     val_split: float = 0.2,
@@ -73,7 +75,8 @@ def _setup_dataloaders(
     known_dataset_forms = ["hqdlhm"]
     # Prepare Dataset
     if dataset_name in known_dataset_forms:
-        full_dataset = HQDLHMDataset(meta_csv_name, crop_size)
+        full_dataset = HQDLHMDataset(meta_csv_name, crop=crop_size, mode=auto_method)
+        total_ids = full_dataset.bin_ids
     else:
         logging.exception(
             "Dataset's other than",
@@ -93,20 +96,20 @@ def _setup_dataloaders(
     # Splits index into validation and train
     dataset_size: int = len(full_dataset)
     val_size: int = int(val_split * dataset_size)
-    train_size: int = dataset_size - val_size
-    test_size: int = dataset_size - (train_size + val_size)
+    train_size: int = dataset_size * int(1 - val_split)
+    test_size: int = dataset_size - (train_size + val_size)  # whatever is leftover (currently intended to be zero)
 
     # assigns the images randomly to each subset based on intended ratio
     train_ds_untransformed, val_ds_untransformed, test_ds_untransformed = random_split(
         full_dataset, [train_size, val_size, test_size]
     )
 
-    val_transform, train_transform = _get_transformation(crop_size, grayscale)
+    train_transform, val_transform = _get_transformation(crop_size, grayscale)
 
     # Assign the transformed datasets
-    train_ds: TransformedDataset = TransformedDataset(train_ds_untransformed, train_transform)
-    val_ds: TransformedDataset = TransformedDataset(val_ds_untransformed, val_transform)
-    test_ds: TransformedDataset = TransformedDataset(test_ds_untransformed, val_transform)
+    train_ds: TransformedDataset = TransformedDataset(train_ds_untransformed, train_transform, total_ids)
+    val_ds: TransformedDataset = TransformedDataset(val_ds_untransformed, val_transform, total_ids)
+    test_ds: TransformedDataset = TransformedDataset(test_ds_untransformed, val_transform, total_ids)
 
     # create data loaders, which just allow the input of data to be iteratively called
     selected_train_loader = DataLoader(
@@ -153,7 +156,7 @@ def _create_optimizer(
         selected_optimizer = torch.optim.AdamW(model.parameters(), lr=opt_lr, weight_decay=opt_weight_decay)
         # automatically reduces learning rate as metric slows down its improvement
         selected_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            selected_optimizer, mode="max", factor=sch_factor, patience=sch_patience
+            selected_optimizer, mode="min", factor=sch_factor, patience=sch_patience
         )
         return selected_optimizer, selected_scheduler
 
@@ -179,9 +182,10 @@ def train_autofocus_refactored(config: AutoConfig):
     #
     seed: int = 42
     eh.set_seed(seed)
+    config_as_dict = asdict(config)  # convert to dict so it can easily be passed into functions
 
     # Setup data
-    train_loader, val_loader, test_loader, bin_centers, train_ds, val_ds = _setup_dataloaders(**config.data)
+    train_loader, val_loader, test_loader, bin_centers, train_ds, val_ds = _setup_dataloaders(**config_as_dict["data"])
 
     # check to see if testing is expected
     try:
@@ -198,8 +202,8 @@ def train_autofocus_refactored(config: AutoConfig):
     path_to_model: Path = Path(config.out_dir) / Path("best_model.pth")
 
     # Setup model, optimizer, loss function (details depend on your setup)
-    model = eh.get_model(**config.model)
-    optimizer, scheduler = _create_optimizer(model, **config.optimizer)
+    model = eh.get_model(**config_as_dict["model"])
+    optimizer, scheduler = _create_optimizer(model, **config_as_dict["optimizer"])
     loss_fn = _create_loss_function(config.auto_method)  # measures of error
 
     # Setup progress display
@@ -226,8 +230,14 @@ def train_autofocus_refactored(config: AutoConfig):
 
     # Run training
     # setup progress monitoring
-    val_metrics = [0, 0]
-    best_val_metric = 0
+    # positive initialization for regression, negative for accuracy
+    best_val_metric = float("inf")
+    if config.auto_method == "reg":
+        pass
+    else:
+        best_val_metric = -best_val_metric
+
+    val_metrics = [0, best_val_metric]
     train_loss: list[float] = []
     val_loss: list[float] = []
     logger.info("Starting training...")
@@ -316,8 +326,8 @@ def train_autofocus_refactored(config: AutoConfig):
     logger.info(f"Training complete. Best Validation Metric: {best_val_metric:.4f}")
     loss_hist = [train_loss, val_loss]  # return the history
 
-    train_z_pred, train_z_true = gather_z_preds(model, train_loader, train_ds, config.device)  # type: ignore
-    val_z_pred, val_z_true = gather_z_preds(model, val_loader, val_ds, config.device)  # type: ignore
+    train_z_pred, train_z_true = gather_z_preds(model, train_loader, train_ds, config.device())  # type: ignore
+    val_z_pred, val_z_true = gather_z_preds(model, val_loader, val_ds, config.device())  # type: ignore
 
     # force type
     val_z_pred_list = convert_array_tolist_type(val_z_pred, float)
@@ -337,8 +347,8 @@ def train_autofocus_refactored(config: AutoConfig):
     # save training data for plotting
     plot_data_obj = plotPred(
         val_z_pred_list,
-        train_z_pred_list,
         val_z_true_list,
+        train_z_pred_list,
         train_z_true_list,
         train_err.tolist(),
         val_err.tolist(),
