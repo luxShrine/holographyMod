@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from dataclasses import field
 from typing import Any
 
 import torch
@@ -33,7 +34,7 @@ class AutoConfig:
     backbone: str = "efficientnet_b4"
     batch_size: int = 16
     crop_size: int = 224
-    dataset_name: str = "hdqlhm"
+    dataset_name: str = "hqdlhm"
     device_user: str = "cuda"
     epoch_count: int = 10
     grayscale: bool = True
@@ -47,36 +48,49 @@ class AutoConfig:
     sch_factor: float = 0.1
     sch_patience: int = 5
     val_split: float = 0.2
-    data: dict[str, Any] = {
-        "num_workers": num_workers,
-        "batch_size": batch_size,
-        "val_split": val_split,
-        "dataset_name": dataset_name,
-        "crop_size": crop_size,
-        "grayscale": grayscale,
-    }
-    model: dict[str, Any] = {
-        "num_workers": num_workers,
-        "backbone": backbone,
-    }
-    optimizer: dict[str, Any] = {
-        "optimizer_type": optimizer_type,
-        "opt_lr": opt_lr,
-        "opt_weight_decay": opt_weight_decay,
-        "sch_factor": sch_factor,
-        "sch_patience": sch_patience,
-    }
+
+    # Use default_factory for mutable fields and populate in __post_init__
+    data: dict[str, Any] = field(default_factory=dict)
+    model: dict[str, Any] = field(default_factory=dict)
+    optimizer: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        """Populate dictionary fields after initialization."""
+        self.data.update(
+            {
+                "meta_csv_name": self.meta_csv_name,
+                "num_workers": self.num_workers,
+                "batch_size": self.batch_size,
+                "val_split": self.val_split,
+                "dataset_name": self.dataset_name,
+                "crop_size": self.crop_size,
+                "grayscale": self.grayscale,
+            }
+        )
+        self.model.update(
+            {
+                "num_classes": self.num_classes,  # Note: num_workers is also in data, consider if this is intended
+                "backbone": self.backbone,
+            }
+        )
+        self.optimizer.update(
+            {
+                "optimizer_type": self.optimizer_type,
+                "opt_lr": self.opt_lr,
+                "opt_weight_decay": self.opt_weight_decay,
+                "sch_factor": self.sch_factor,
+                "sch_patience": self.sch_patience,
+            }
+        )
 
     def device(self):
         """Return the device to use in autofocus training."""
-        # make sure cuda is available otherwise use cpu
-        if self.device_user == "cuda" and torch.cuda.is_available():
-            actual_device = "cuda"
-        elif self.device == "cuda" and not torch.cuda.is_available():
-            logger.warning("Failed to find device capable of using cuda, using cpu instaed")
-            actual_device = "cpu"
-        else:
-            raise ValueError(logger.exception("could not determine device to use"))
+        actual_device = "cpu"  # Default to CPU
+        if self.device_user == "cuda":
+            if torch.cuda.is_available():
+                actual_device = "cuda"
+            else:
+                logger.warning("CUDA specified but not available, using CPU instead.")
         logger.info(f"Using device: {actual_device}")
         return actual_device
 
