@@ -15,8 +15,12 @@ def convert_array_tolist_type(data_array: npt.NDArray[Any], data_type: Any):
     data_list: list[Any] = []
     for i in range(len(data_array)):
         try:
-            data_list[i] = data_type(data_array[i])
-        except ValueError:
+            data_list.append(data_type(data_array[i]))
+        except ValueError as ve:
             # Handle the exception by raising an error
-            raise ValueError(logger.exception(f"Cannot convert '{data_array[i]}' to {data_type.__name__}"))
+            logger.exception(f"Cannot convert '{data_array[i]}' to {data_type.__name__}")
+            raise ve
+        except IndexError as ie:
+            logger.exception(f"Cannot find index at '{i}' max index is {len(data_array)}")
+            raise ie
     return data_list
