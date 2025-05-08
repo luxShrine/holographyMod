@@ -1,10 +1,8 @@
 import random
 
 import numpy as np
-from timm import create_model  # type: ignore
-from torchvision import models
-import torch.nn as nn
 import torch
+import torch.nn as nn
 from rich.console import Console
 from rich.progress import BarColumn
 from rich.progress import Progress
@@ -14,11 +12,14 @@ from rich.progress import TaskProgressColumn
 from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 from rich.progress import TimeRemainingColumn
+from timm import create_model  # type: ignore
 from torch import Tensor
 from torch.nn import Module
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
+from torchvision import models
 
+from holo.util.list_helper import print_list
 from holo.util.log import logger
 from holo.util.prog_helper import MetricColumn
 from holo.util.prog_helper import RateColumn
@@ -28,11 +29,14 @@ def setup_rich_progress(train_type: str):
     """Setup progress monitoring for epoch."""
     if train_type == "reg":
         accuracy_measure = "val_mae"
+        acc_col = MetricColumn(accuracy_measure, fmt="{:.2}", style="green")
     elif train_type == "class":
         accuracy_measure = "val_acc"
+        acc_col = MetricColumn(accuracy_measure, fmt="{:.2%}", style="green")
     else:
         logger.exception(f"Failed to process training type of {train_type}, assuming type is regression.")
         accuracy_measure = "val_mae"
+        acc_col = MetricColumn(accuracy_measure, fmt="{:.2}", style="green")
 
     console = Console()  # allows rich to automatically set certain items depending on terminal
     progress = Progress(
@@ -45,13 +49,14 @@ def setup_rich_progress(train_type: str):
         # eh.MetricColumn("batch_loss"),
         MetricColumn("avg_loss", style="magenta"),
         MetricColumn("val_loss", style="yellow"),
-        MetricColumn(accuracy_measure, fmt="{:.2%}", style="green"),
+        acc_col,
         MetricColumn("lr", fmt="{:.2e}", style="bright_black"),
         SpinnerColumn(),  # shows in progress tasks
         console=console,
         transient=False,  # keep the bars on screen after finishing
     )
     return progress
+
 
 def get_model(num_classes: int = 1, backbone: str = "efficientnet_b4"):
     """Load a pre-trained model and adapts its final layer for the given number of classes.
@@ -125,15 +130,20 @@ def train_epoch(
     """
     model.train()
     loss = 0
-    for n, p in model.named_parameters():
-        if "head" not in n and "classifier" not in n:
-            p.requires_grad = False  # first 3 epochs
+    torch_device = torch.device(device)
+    # for n, p in model.named_parameters():
+    #     if "head" not in n and "classifier" not in n:
+    #         p.requires_grad = False  # first 3 epochs
+    model.cuda()
     for imgs, labels in loader:
-        imgs, labels = imgs.to(device), labels.to(device)  # associate torch tensor with device
+        imgs, labels = imgs.to(torch_device), labels.to(torch_device)  # associate torch tensor with device
 
         optimizer.zero_grad()  # reset gradients each loop
+        # logger.debug(f"reached point here with {imgs} and labels {labels}")
         outputs = model(imgs).squeeze(1)  # pass in tensors of images, to get output of tensor data
+        # logger.debug(f"reached point here with {outputs}")
         loss_current = criterion(outputs, labels)  # find loss
+        # logger.debug(f"reached point here with {loss_current}")
         loss_current.backward()  # compute the gradient of the loss
         optimizer.step()  # compute one step of the optimization algorithim
 
