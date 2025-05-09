@@ -14,23 +14,24 @@ from holo.util.log import logger
 class plotPred:
     """Class for storing plotting information."""
 
-    # y_test_pred: npt.NDArray[Any]
-    # y_test: npt.NDArray[Any]
-    # y_train_pred: npt.NDArray[Any]
-    # y_train: npt.NDArray[Any]
-    # yerr_train: npt.NDArray[Any]
-    # yerr_test: npt.NDArray[Any]
-    y_test_pred: list[Any]
-    y_test: list[Any]
-    y_train_pred: list[Any]
-    y_train: list[Any]
-    yerr_train: list[Any]
-    yerr_test: list[Any]
+    # z_test_pred: npt.NDArray[Any]
+    # z_test: npt.NDArray[Any]
+    # z_train_pred: npt.NDArray[Any]
+    # z_train: npt.NDArray[Any]
+    # zerr_train: npt.NDArray[Any]
+    # zerr_test: npt.NDArray[Any]
+    z_test_pred: list[Any]
+    z_test: list[Any]
+    z_train_pred: list[Any]
+    z_train: list[Any]
+    zerr_train: list[Any]
+    zerr_test: list[Any]
     title: str
     fname: str
     save_fig: bool = True
 
 
+# TODO: currently a static name <05-09-25>
 def load_obj() -> list[plotPred]:
     """Load saved json containing object of class plotPred."""
     try:
