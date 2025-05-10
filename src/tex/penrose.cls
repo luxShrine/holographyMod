@@ -28,7 +28,7 @@
 \RequirePackage[a4paper]{geometry}
 \geometry{nomarginpar}
 \geometry{includeall}
-\geometry{top=16mm, bottom=22mm, left=31mm, right=31mm}
+\geometry{top=16mm, bottom=22mm, left=34mm, right=34mm}
 \geometry{headheight=7mm, headsep=6mm, footskip=8mm}
 
 %------------------------------------------------------------

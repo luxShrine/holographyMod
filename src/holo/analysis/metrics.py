@@ -1,10 +1,15 @@
+import warnings
+from pathlib import Path
+from typing import Any
+
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
+import polars as pl
+import seaborn as sns  # NOTE: testing style
 import torch
-from matplotlib.axes import Axes as AxesType
-from PIL import Image
-from PIL.Image import Image as ImageType
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from rich.progress import track
 from scipy.stats import chi2 as chi2_dist
 from torch import Tensor
 from torch.nn import Module
@@ -12,22 +17,35 @@ from torch.utils.data import DataLoader
 
 from holo.data.dataset import HologramFocusDataset
 from holo.util.log import logger
+from holo.util.output import validate_bins
 
 # WARN: backend setting, should be temporary fix
 # import matplotlib
 # matplotlib.use("QtAgg")
 
 
+def _save_show_plot(in_fig, save_path: str, show: bool, title: str):
+    """Helper for repeated save or show functionality."""
+    in_fig.savefig(save_path, dpi=300)
+    logger.info(f"{title} plot saved to, {Path(save_path)}")
+    if show:
+        plt.show()
+    else:
+        plt.close(in_fig)
+
+
 def gather_z_preds(
     model: Module,
+    analysis: str,
     loader: DataLoader[tuple[Tensor, Tensor]],
     dataset: HologramFocusDataset,
     device: str,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]:
     """Combine model predictions info format appropriate for comparison.
 
     Args:
         model (Module): Class of neural network used for prediction.
+        analysis (str): Type of analysis performed (regression "reg" or classification).
         loader (DataLoader): Iterable that contains dataset samples.
         dataset (HologramFocusDataset): Custom dataset object for passing in bin values.
         device (str): Device used for analysis.
@@ -47,23 +65,41 @@ def gather_z_preds(
 
             out = model(x)  # pass in data to model
 
-            # pick the form that matches network
-            if out.ndim == 2:
-                # if model outputs 2D tensor of scores/probabilities, set to 1D
-                cls_pred = out.argmax(dim=1).cpu()
-            else:
-                # if model outputs tensor already including an index, "squeeze" out anything but the data
-                cls_pred = out.squeeze().cpu().long()
-
             # convert z to um from object parameters
-            z_pred = dataset.bin_centers[cls_pred.numpy()] * 1000
-            z_tgt = dataset.bin_centers[y.cpu().numpy()] * 1000
+            if analysis == "reg":  # float outputs are depth in meters
+                z_pred = (out.squeeze(1) * dataset.z_sigma + dataset.z_mu).cpu().numpy()
+                z_tgt = (y * dataset.z_sigma + dataset.z_mu).cpu().numpy()
+            else:  # class -> bin index
+                # pick the form that matches network
+                if out.ndim == 2:
+                    # if model outputs 2D tensor of scores/probabilities, set to 1D
+                    cls_pred = out.argmax(dim=1).cpu()
+                else:
+                    # if model outputs tensor already including an index, "squeeze" out anything but the data
+                    cls_pred = out.squeeze().cpu().long()
+                    cls_pred = out.argmax(1).cpu()
+
+                z_pred = dataset.bin_centers_m[cls_pred.numpy()]
+                z_tgt = dataset.bin_centers_m[y.cpu().numpy()]
 
             # store each of these values
             z_preds = np.append(z_preds, z_pred)
             z_true = np.append(z_true, z_tgt)
 
-    return np.concatenate(z_preds, dtype=np.float64), np.concatenate(z_true, dtype=np.float64)
+    return np.asarray(z_preds, dtype=np.float32).ravel(), np.asarray(z_true, dtype=np.float32).ravel()
+
+
+def _wrap_phase(p: npt.NDArray[np.float32]):
+    """One liner to wrap value in pi -> - pi."""
+    return (p + np.pi) % (2 * np.pi) - np.pi
+
+
+def phase_metrics(org_phase: npt.NDArray[np.float32], recon_phase: npt.NDArray[np.float32]):
+    """Calculate the mean average error and the phase cosine similarity."""
+    diff = _wrap_phase(org_phase - recon_phase)
+    mae: float = np.abs(diff).mean()
+    cos_sim = np.mean(np.cos(diff), dtype=float)  # 1.0 → perfect match
+    return {"MAE_phase": mae, "CosSim": cos_sim}
 
 
 def error_metric(expected: npt.NDArray[np.float64], observed: npt.NDArray[np.float64], max_px: float):
@@ -90,12 +126,11 @@ def error_metric(expected: npt.NDArray[np.float64], observed: npt.NDArray[np.flo
     return nrmse, psnr
 
 
-# TODO: porpely go thru, fix types
 def plot_actual_versus_predicted(
-    y_test_pred: npt.NDArray[np.float64],
-    y_test: npt.NDArray[np.float64],
-    y_train_pred: npt.NDArray[np.float64],
-    y_train: npt.NDArray[np.float64],
+    z_test_pred: npt.NDArray[np.float64],
+    z_test: npt.NDArray[np.float64],
+    z_train_pred: npt.NDArray[np.float64],
+    z_train: npt.NDArray[np.float64],
     yerr_train: npt.NDArray[np.float64] | None = None,
     yerr_test: npt.NDArray[np.float64] | None = None,
     title: None | str = None,
@@ -103,13 +138,13 @@ def plot_actual_versus_predicted(
     fname: str = "pred.png",
     figsize: tuple[int, int] = (8, 8),
 ) -> None:
-    """Plot actual vs. predicted values for both training and testing sets.
+    """Plot actual vs. predicted values for both training and testing sets for classification.
 
     Args:
-        y_test_pred:  Predicted values for the test set.
-        y_test:       Actual values for the test set.
-        y_train_pred: Predicted values for the train set.
-        y_train:      Actual values for the train set.
+        z_test_pred:  Predicted values for the test set.
+        z_test:       Actual values for the test set.
+        z_train_pred: Predicted values for the train set.
+        z_train:      Actual values for the train set.
         yerr_train:   Error in train data.
         yerr_test:    Error in testing data.
         title:        Optional title for the plot.
@@ -119,162 +154,313 @@ def plot_actual_versus_predicted(
         figsize:      Figure size in inches (width, height).
 
     """
+    # check for errors to ensure can be plotted
+    assert z_test.shape == z_train_pred.shape, "z_test_pred is not the same shape as z_train_pred"
+    assert z_train.shape == z_train_pred.shape, "z_train is not the same shape as z_train_pred"
+    fig, ax = plt.subplots(figsize=figsize)  # create the plot #type: ignore
+
     # global limits
-    conc = np.concatenate([y_test_pred, y_test, y_train_pred, y_train])
-    span = np.ptp(conc)  # protect against span == 0
+    conc = np.concatenate([z_test_pred, z_test, z_train_pred, z_train])  # combine all values into one array
+    span = np.ptp(conc)  # returns range of values "peak to peak"
+    # create the limits of the plot so it pads the plotted line
     vmin: float = conc.min() - span / 4
     vmax: float = conc.max() + span / 4
-
-    fig, ax = plt.subplots(figsize=figsize)  # type: ignore
     ax.set_xlim(vmin, vmax)
     ax.set_ylim(vmin, vmax)
 
-    # training + validation scatter
+    # if my model was perfect it would match the known dataset values to the predicted values
+    # create an ideal line to measure against
     ax.plot([vmin, vmax], [vmin, vmax], "k--", lw=1.5, label="Ideal")  # type: ignore
 
-    # train scatter
-    ax.scatter(y_train, y_train_pred, s=6, c="C0", alpha=0.12, rasterized=True)  # type: ignore
+    # plot the train dataset z_value predictions against the known values
+    ax.scatter(z_train, z_train_pred, s=6, c="C0", alpha=0.05, rasterized=True)  # type: ignore
 
-    # validation hexbin
-    hb = ax.hexbin(y_test, y_test_pred, gridsize=90, cmap="inferno", mincnt=1, bins="log", alpha=0.9, zorder=1)  # type: ignore
-    fig.colorbar(hb, ax=ax, label=r"${{ log_{10} }}$(count)")  # type: ignore
+    # for the validation values, use a hexbin which shows the density of points in a given region of the plot
+    hb = ax.hexbin(z_test, z_test_pred, gridsize=70, cmap="inferno", mincnt=1, bins="log", alpha=0.9, zorder=1)  # type: ignore
+    fig.colorbar(hb, ax=ax, label=r"${{ log_{10} }}$(count)")  # colorbar to indicate number of bins #type: ignore
 
-    # labels
+    # x/y axis label, title, grid
     ax.set_xlabel(r"Actual focus depth $(\mu m)$")  # type: ignore
     ax.set_ylabel(r"Predicted focus depth $(\mu m)$")  # type: ignore
     if title:
         ax.set_title(title)  # type: ignore
     ax.grid(True, linestyle=":")  # type: ignore
 
-    rmse = np.sqrt(((y_test_pred - y_test) ** 2).mean())
-    print(rf"Validation RMSE : {rmse:7.2f} µm")
+    # calculate nrmse, ignore the psnr for this
+    nrmse, psnr = error_metric(z_test, z_test_pred, 1)
+    if np.isinf(psnr):
+        print("PSNR infinite (zero MSE)")
+    else:
+        print(rf"Validation NRMSE : {nrmse:7.2f} µm  PSNR: {psnr}")
 
-    # uncertainty ribbon
+    # uncertainty ribbon, better than having tons of error bars
     if yerr_train is None or yerr_test is None:
         logger.warning("No error arrays supplied -> skipping uncertainty ribbon.")
     else:
-        min_samples = 16
-        sigma_floor = 1.0  # micro meters, scale of data
-        q = 1  # how many sigma to show
+        min_samples = 16  # minimum values in a bin
+        sigma_floor = 1.0  # micro meters, scale ought to vary data to data
+        q = 1  # how many sigma to show on plot, this is the width of the error band
 
         bins = np.linspace(vmin, vmax, 30)  # 29 bins
-        centers = 0.5 * (bins[:-1] + bins[1:])
-        digit = np.digitize(y_train, bins) - 1  # 0 … 28
+        centers = 0.5 * (bins[:-1] + bins[1:])  # find the center of the bins, which is the value at which they appear
+        digit = np.digitize(z_train, bins) - 1  # find which bin each value falls into, range of 0-28
 
-        good_bins: list[tuple[float, float, float]] = []  # (x, mu, sigma)
+        good_bins = validate_bins(centers, digit, min_samples, z_train_pred, sigma_floor)
 
-        for k, center in enumerate(centers):
-            mask = digit == k
-            n = mask.sum()
-            if n < min_samples:
-                continue  # skip thinly populated bins
+        # "unzips" the list of arrays into each subsequent value as a numpy array
+        # strict false to avoid raising a value error if arrays are different sizes
+        x_train_np, mu_train_np, sigma_train_np = (
+            np.asarray(v, dtype=np.float64) for v in zip(*good_bins, strict=False)
+        )
 
-            vals = y_train_pred[mask]
-            mu = vals.mean()
-            sigma = max(vals.std(ddof=1), sigma_floor)
+        # chi squared statistic
+        chi2 = np.sum(((mu_train_np - x_train_np) / sigma_train_np) ** 2)  # chi^2 of train_z
+        dof = len(x_train_np) - 1  # set dof to the length of the number of measurements
+        chi2_red = chi2 / dof
+        # p value to measure if my data significantly deviates from expected
+        p_val = 1.0 - chi2_dist.cdf(chi2, dof)  # type: ignore
 
-            good_bins.append((center, mu, sigma))
+        print(f"chi^2 / dof = {chi2:.1f} / {dof} -> chi^2_red = {chi2_red:.2f}")
+        print(f"p-value  = {p_val:.3f}")
 
-        # nothing to do if <2 good bins
-        if len(good_bins) < 2:
-            print(r"Not enough populated bins to compute chi^2.")
-        else:
-            x_train_np, mu_train_np, sigma_train_np = (
-                np.asarray(v, dtype=np.float64) for v in zip(*good_bins, strict=False)
-            )
+        # plot the mean value of the z_train predictions, with a band representing the error of the bins
+        ax.plot(x_train_np, mu_train_np, color="C0", lw=2, label="Train mean", zorder=4)  # type: ignore
+        ax.fill_between(  # type: ignore
+            x_train_np,
+            mu_train_np - q * sigma_train_np,
+            mu_train_np + q * sigma_train_np,
+            color="C0",
+            alpha=0.20,
+            label=rf"${{ \pm }}${q} ${{ \sigma }}$",
+            zorder=2,
+        )
 
-            # chi squared statistic
-            chi2 = np.sum(((mu_train_np - x_train_np) / sigma_train_np) ** 2)
-            dof = len(x_train_np) - 1
-            chi2_red = chi2 / dof
-            p_val = 1.0 - chi2_dist.cdf(chi2, dof)  # type: ignore
+        # measure the percent of values actually inside the standard deviation band
+        sigma_bins = np.full_like(centers, np.nan)  # initialize an array for SD bins, size of centers
+        for count, _, sig in good_bins:
+            # calculate the difference of actual/pred in a bin, take the minimum value
+            # at that index, record the sigma value
+            sigma_bins[np.argmin(np.abs(centers - count))] = sig
 
-            print(rf"chi / dof = {chi2:.1f} / {dof}  -> \chi^2_red = {chi2_red:.2f}")
-            print(f"p-value  = {p_val:.3f}")
+        digit_val = np.digitize(z_test, bins) - 1  # digitize *test* values
+        sigma_val = sigma_bins[digit_val]  # get the SD of each bin of z_test values
 
-            # ribbon + mean line
-            ax.plot(x_train_np, mu_train_np, color="C0", lw=2, label="Train mean", zorder=4)  # type: ignore
-            ax.fill_between(  # type: ignore
-                x_train_np,
-                mu_train_np - q * sigma_train_np,
-                mu_train_np + q * sigma_train_np,
-                color="C0",
-                alpha=0.20,
-                label=rf"${{ \pm }}${q} ${{ \sigma }}$",
-                zorder=2,
-            )
+        # create a condition such that we only evaluate finite and non-negative standard deviations
+        sig_cond = np.isfinite(sigma_val) & (sigma_val > 0)
+        # number of hits: the count of predictions that differ from the actual less than q standard deviations
+        hits = np.abs(z_test_pred[sig_cond] - z_test[sig_cond]) < q * sigma_val[sig_cond]
+        hit_rate = hits.mean() * 100  # return as a percentage
 
-            # res_val = y_test_pred - y_test
-            # ax_res = fig.add_axes([0.13, 0.07, 0.68, 0.18])  # [left, bottom, width, height] # type: ignore
-            # ax_res.scatter(y_test, res_val, s=6, alpha=0.4)  # type: ignore
-            # ax_res.axhline(0, color="k", lw=1)  # type: ignore
-            # ax_res.set_xlabel("Actual (µm)")  # type: ignore
-            # ax_res.set_ylabel("Residual")  # type: ignore
+        print(f"Validation MAE  : {np.abs(z_test_pred - z_test).mean():7.2f} µm")
+        print(rf"% inside +-{q} sigma ribbon (val): {hit_rate:5.1f}%")
 
-            # hit‑rate inside ribbon
-            sigma_bins = np.full_like(centers, np.nan)
-            for c, _, s in good_bins:
-                sigma_bins[np.argmin(np.abs(centers - c))] = s
-
-            digit_val = np.digitize(y_test, bins) - 1
-            sigma_val = sigma_bins[digit_val]
-
-            mask_val = np.isfinite(sigma_val) & (sigma_val > 0)
-            hits = np.abs(y_test_pred[mask_val] - y_test[mask_val]) < q * sigma_val[mask_val]
-            hit_rate = hits.mean() * 100
-
-            print(f"Validation MAE  : {np.abs(y_test_pred - y_test).mean():7.2f} µm")
-            print(rf"% inside +-{q} sigma ribbon (val): {hit_rate:5.1f}%")
-
+    # NOTE: must create legend after all plots have been created
     ax.legend(loc="upper left")  # type: ignore
     plt.tight_layout()
-    if save_fig:
-        fig.savefig(fname, dpi=300)  # type: ignore
-        plt.close(fig)
-    else:
-        plt.show()  # type: ignore
+    _save_show_plot(fig, savepath, show, title)
 
 
-def plot_amp_phase(
-    original_img: str,
-    fresnel_amp_img: npt.NDArray[np.float64],
-    fresnel_phase_img: npt.NDArray[np.float64],
-    nrmsd: np.float64,
-    psnr: np.float64,
+def plot_residual_vs_true(
+    z_pred_m: npt.NDArray[np.float64],
+    z_true_m: npt.NDArray[np.float64],
+    title: str = "Residual vs True depth",
+    savepath: str = "phase_amp.png",
+    show: bool = False,
 ):
-    """Plot the amplitude, phase and original image all in one plot.
+    res_m = z_pred_m - z_true_m
+    n_bins = max(10, len(z_true_m) // 50)
+    bins_m = np.linspace(z_true_m.min(), z_true_m.max(), n_bins, dtype=np.float32)
+
+    fig, ax = plt.subplots(figsize=(6, 3.5))
+    ax.scatter(z_true_m, res_m, s=10, alpha=0.3)
+
+    # running mean & ±σ
+    bin_idx = np.digitize(z_true_m, bins_m)
+    mu, sd, xc = [], [], []
+    for i in track(range(1, len(bins_m)), description="bin checking..."):
+        mask = bin_idx == i
+        if mask.any():  # at least one sample in the bin
+            mu.append(res_m[mask].mean())
+            sd.append(res_m[mask].std())
+            xc.append(0.5 * (bins_m[i] + bins_m[i - 1]))
+
+    ax.plot(xc, np.array(mu), c="C0", lw=1, label="mean")
+    ax.fill_between(xc, (np.array(mu) - sd), (np.array(mu) + sd), alpha=0.15, color="C0", label="±1 σ")
+
+    ax.axhline(0, ls="--", c="k", lw=0.8)
+    ax.set_xlabel("True focus depth (µm)")
+    ax.set_ylabel("Residual (pred–true) (µm)")
+    ax.legend(loc="upper right")
+    ax.set_title(title)
+    plt.tight_layout()
+    _save_show_plot(fig, savepath, show, title)
+
+
+def plot_violin_depth_bins(
+    z_pred_m: npt.NDArray[np.float64],
+    z_true_m: npt.NDArray[np.float64],
+    title: str = "Signed error distribution per depth slice",
+    savepath: str = "phase_amp.png",
+    show: bool = False,
+):
+    # sanity
+    assert z_pred_m.shape == z_true_m.shape, "Vectors must match"
+    depth_um = z_true_m * 1e6
+    err_um = (z_pred_m - z_true_m) * 1e6
+
+    # choose depth bins so each violin has ~50 points
+    n_bins = max(10, len(depth_um) // 50)  # tweak divisor as desired
+    bins = np.linspace(depth_um.min(), depth_um.max(), n_bins + 1)
+    bin_idx = np.digitize(depth_um, bins) - 1  # → 0 … n_bins-1
+    bin_cent = 0.5 * (bins[:-1] + bins[1:])  # for labels
+
+    df = pl.DataFrame(
+        {
+            "bin": bin_idx,
+            "err_um": err_um,
+        }
+    )  # seaborn can plot from polars
+
+    fig, ax = plt.subplots(figsize=(8, 3))
+    sns.violinplot(data=df, x="bin", y="err_um", inner="quartile", cut=0, bw="scott", ax=ax, width=0.9, color="0.4")
+
+    ax.axhline(0, ls="--", c="k", lw=0.8)
+    ax.set_ylabel("Pred − true (µm)")
+    ax.set_xlabel("True depth bin (µm)")
+
+    # thin the x-axis ticks to ~8 labels
+    step = max(1, n_bins // 8)
+    tick_pos = np.arange(0, n_bins, step)
+    tick_label = [f"{bin_cent[i]:.4f}" for i in tick_pos]
+
+    ax.set_xticks(tick_pos, tick_label, rotation=40, ha="right")
+    ax.set_title(title)
+
+    fig.tight_layout()
+    _save_show_plot(fig, savepath, show, title)
+
+
+def plot_hexbin_with_marginals(
+    z_pred_m: npt.NDArray[np.float64],
+    z_true_m: npt.NDArray[np.float64],
+    title: str = "Prediction density (val)",
+    savepath: str = "phase_amp.png",
+    show: bool = False,
+):
+    # data
+    mask = np.isfinite(z_true_m) & np.isfinite(z_pred_m)
+    z_true_m, z_pred_m = z_true_m[mask], z_pred_m[mask]
+
+    if z_true_m.size == 0:
+        warnings.warn("plot_hexbin: no finite points after filtering", stacklevel=2)
+        return
+
+    z_true_um, z_pred_um = z_true_m * 1e6, z_pred_m * 1e6
+
+    # figure & main hexbin
+    fig, ax = plt.subplots(figsize=(5, 5))
+    hex_px = 8
+    grids = max(20, int(fig.get_size_inches()[0] * fig.dpi / hex_px))
+
+    hb = ax.hexbin(
+        z_true_um, z_pred_um, gridsize=grids, cmap="inferno", bins="log" if z_true_m.size > 1000 else None, mincnt=1
+    )
+
+    rng = [min(z_true_um.min(), z_pred_um.min()), max(z_true_um.max(), z_pred_um.max())]
+    ax.plot(rng, rng, ls="--", c="grey", lw=0.8)
+    ax.set_xlim(rng)
+    ax.set_ylim(rng)
+
+    ax.set_xlabel("True depth (µm)")
+    ax.set_ylabel("Predicted depth (µm)")
+    ax.set_title(title)
+
+    if z_true_m.size > 1000:
+        fig.colorbar(hb, ax=ax, label=r"$\log_{10}(\mathrm{count})$")
+    else:
+        fig.colorbar(hb, ax=ax, label=r"$(\mathrm{count})$")
+
+    # marginal
+    div = make_axes_locatable(ax)
+    ax_top = div.append_axes("top", 1.0, pad=0.1, sharex=ax)
+    ax_right = div.append_axes("right", 1.0, pad=0.1, sharey=ax)
+
+    ax_top.hist(z_true_um, bins=60, color="grey", alpha=0.6)
+    ax_right.hist(z_pred_um, bins=60, orientation="horizontal", color="grey", alpha=0.6)
+    ax_top.axis("off")
+    ax_right.axis("off")
+
+    fig.tight_layout()
+    _save_show_plot(fig, savepath, show, title)
+
+
+# hologram_array: Original image, cropped to match reconstruction image.
+def plot_amp_phase(
+    amp_recon: npt.NDArray[Any],
+    phase_recon: npt.NDArray[Any],
+    *,  # allows for parsing in truth values
+    amp_true: npt.NDArray[Any] | None = None,
+    phase_true: npt.NDArray[Any] | None = None,
+    savepath: str = "phase_amp.png",
+    show: bool = False,
+):
+    """Visualise amplitude & phase reconstruction.
 
     Args:
-        original_img: Path to the original image.
-        fresnel_amp_img: Numpy array of the reconsructed image's amplitude.
-        fresnel_phase_img: Numpy array of the reconsructed image's phase.
-        nrmsd: The average normalized root mean square error between the original and reconstructed image.
-        psnr: The average peak to signal noise ratio between the original and reconstructed image.
-
-    Returns:
-        type and description of the returned object.
+        amp_recon, phase_recon : arrays
+            Results from your Fresnel‑solver.
+        amp_true, phase_true : arrays or None
+            Provide these **only if** you truly know the ground‑truth field.
+            When they are None the function hides GT / error panels.
 
     """
-    # temp plotting to see it works
+    has_gt = amp_true is not None and phase_true is not None
+    title = "amp phase"
 
-    fig, axs = plt.subplots(2, 2)  # type: ignore
-    fig.text(0.5, 0.025, f"$PSNR={psnr}$ \n $NRMS={nrmsd}$")  # type: ignore
+    if has_gt:
+        assert amp_true.shape == amp_recon.shape
+        assert phase_true.shape == phase_recon.shape
 
-    plot_amp: AxesType = axs[0, 0].imshow(fresnel_amp_img, cmap="gray")
-    axs[0, 0].set_title("Reconstructed Amplitude")
-    fig.colorbar(plot_amp, ax=axs[0, 0])  # type: ignore
+        # figure layout
+        fig, axes = plt.subplots(2, 3, figsize=(11, 6))
+        (ax_at, ax_ar, ax_ae, ax_pt, ax_pr, ax_pe) = axes.flatten()
 
-    plot_phase: AxesType = axs[0, 1].imshow(fresnel_phase_img, cmap="gray")
-    axs[0, 1].set_title("Reconstructed Phase")
-    fig.colorbar(plot_phase, ax=axs[0, 1])  # type: ignore
+        # amplitude
+        im0 = ax_at.imshow(amp_true, cmap="gray")
+        ax_at.set_title("Amplitude – ground‑truth")
+        fig.colorbar(im0, ax=ax_at, shrink=0.8)
 
-    hologram: ImageType = Image.open(original_img)
-    plot_holo: AxesType = axs[1, 0].imshow(hologram, cmap="gray")
-    axs[1, 0].set_title("Original Image Phase")
-    fig.colorbar(plot_holo, ax=axs[1, 0])  # type: ignore
+        amp_err = np.abs(amp_true - amp_recon)
+        im2 = ax_ae.imshow(amp_err, cmap="inferno")
+        ax_ae.set_title("Amplitude error")
+        fig.colorbar(im2, ax=ax_ae, shrink=0.8)
 
-    axs[1, 1].axis("off")
+        im3 = ax_pt.imshow(phase_true, cmap="twilight", vmin=-np.pi, vmax=np.pi)
+        ax_pt.set_title("Phase – ground‑truth")
+        fig.colorbar(im3, ax=ax_pt, shrink=0.8)
+
+        phase_err = _wrap_phase(phase_true - phase_recon)
+        im5 = ax_pe.imshow(phase_err, cmap="twilight", vmin=-np.pi, vmax=np.pi)
+        ax_pe.set_title("Phase error (wrapped)")
+        fig.colorbar(im5, ax=ax_pe, shrink=0.8)
+
+    else:
+        fig, axes = plt.subplots(2, 2, figsize=(8, 6))
+        (ax_ar, ax_ae, ax_pr, ax_pe) = axes.flatten()  # only 4 axes
+
+        im1 = ax_ar.imshow(amp_recon, cmap="gray")
+        ax_ar.set_title("Amplitude – recon")
+        fig.colorbar(im1, ax=ax_ar, shrink=0.8)
+
+        # phase
+        im4 = ax_pr.imshow(phase_recon, cmap="twilight", vmin=-np.pi, vmax=np.pi)
+        ax_pr.set_title("Phase – recon")
+        fig.colorbar(im4, ax=ax_pr, shrink=0.8)
+
+    # cosmetics
+    for ax in axes.flatten():
+        ax.set_xticks([])
+        ax.set_yticks([])
 
     plt.tight_layout()
-    plt.show()  # type: ignore
-    plt.savefig("amp_phase.png")  # type: ignore
+    _save_show_plot(fig, savepath, show, title)
