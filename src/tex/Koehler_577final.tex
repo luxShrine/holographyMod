@@ -5,72 +5,424 @@
 % \usepackage{thmstyles}
 % \usepackage{graphicx}
 % \graphicspath{{images/}}
+% ------------------------------------------------------------
+%                 Packages
+% ------------------------------------------------------------
+\usepackage{graphicx}                 % includegraphics
+\usepackage{siunitx}                  % \SI{<num>}{<unit>} for µm, nm, …
+\usepackage{booktabs}                 % professional tables
+\usepackage{subcaption}               % sub‑figures
+\usepackage{hyperref}                 % hyperlinks
+\usepackage{xcolor}                   % colours for code
+\usepackage{listings}                 % source‑code blocks
+\usepackage{csquotes}                 % recommended for biblatex
 
-\title[Title for the Header]{A Very Long Title That Is Being Used for This Document on Purpose}
-\subtitle{This is an optional subtitle}
-\author{Author M. Person}
-\affiliation{Some Affiliation, City}
+% ------------------------------------------------------------
+%                 Document meta‑data
+% ------------------------------------------------------------
+\title{Deep‑Learning Autofocus for Digital Holography: holographyMod}
+\subtitle{Final Project Report}
+\author{James Koehler\\jlkoehler@albany.edu}
 \date{\today}
 \begin{document}
 
+% ------------------------------------------------------------
+% Code listing style
+% ------------------------------------------------------------
+\lstdefinestyle{python}{%
+  language=Python,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!70!black},
+  commentstyle=\color{gray},
+  stringstyle=\color{orange!80!black},
+  numberstyle=\tiny\color{gray},
+  numbers=left,
+  stepnumber=1,
+  frame=single,
+  breaklines=true,
+  tabsize=2
+}
+
+% ============================================================
+%                      Document
+% ============================================================
+\begin{document}
 \maketitle
+
 \begin{abstract}
-  Lorem ipsum dolor sit amet, consectetur adipisicing elit, sed do eiusmod tempor
-  incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud
-  exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
+  Utilization of a convolutional‑neural‑network (CNN) for the purposes of
+  predicting the in‑focus reconstruction depth of digital holograms can improve the
+  workflow of research in digital holographic microscopy (DHM). The software
+  implementation in my work here is done primarily with Python, and PyTorch 2. This code
+  lives in the \texttt{src/holo} package hierarchy. The primary contributions of this
+  code are a series of self-maintaining checks on the provided dataset, a configurable
+  training script accessed via the CLI package \texttt{Typer}, which provides a rich set
+  of diagnostic plots (MAE, residuals, violins, hex‑bins).
 \end{abstract}
 
-\section{Section Heading}
-\newthought{The first few words} of a new section can be typeset in a different style by
-using the \verb|\newthought{...}| command. The \texttt{penrose.cls} class file has five
-class options: three font sizes \texttt{10pt} (default), \texttt{11pt}, and
-\texttt{12pt}, and a switch to activate the \texttt{draft} mode or revert to
-\texttt{final} (default).
+\tableofcontents
+\newpage
 
-\begin{align}
-  x^{2} = \int dx \,  = \iiint_{V} \xi e^{x}  \text{d}  \text{d}  \text{d}
-\end{align}
+% ------------------------------------------------------------
+\section{Introduction}
+\subsection{Background}
+\hspace*{6mm} \newthought{From the time of Aristotle and onwards}, humanity has sought to
+capture and understand
+what exactly it is we see. With the invention of lenses we had a basis for capturing more
+than what the human eye itself was capable of, but we still had enormous issues to
+surmount. There was the issue of how exactly to compound the lens as to increase
+magnification, how to limit the aberration hitting a lens, and how to effectively
+illuminate that which is so small even capturing light from from the specimen can be a
+struggle \autoref{microscope_com}.
 
-Customised styles for tables, captions and lists have been added, along with several
-typographical enhancements through the use of \texttt{parskip}, \texttt{microtype} and
-\texttt{lmodern}. The \texttt{hyperref} package has been loaded in the class file with
-some custom settings.
+With the advent of modern computing came the necessity to digitize all forms of
+information that was only in the physical world, one important subject was that of images
+and those images of microscopy. How DHM as a process works is we record the interference between a
+reference and an object beam, yielding an intensity‑only hologram \autoref{fig:laser_setup}. To
+recover the complex field one must utilize the output given, alongside the experimental
+setup to solve for how the wave that formed such an intensity pattern ought to be. This
+is done numerically, by propagating the hologram
+to its focus plane. By retrieving this distance and focusing at the ideal distance, we
+effectively gain more information that would otherwise never be had. Manual searching for
+such a depth is extremely tedious as the process involves the collection of numerous
+intensities at various depths, from which only one ought to give the greatest amount of
+information, and the difference from it's neighbors would be miniscule
+\autoref{Convolutional Neural Network (CNN) vs Vision Transformer (ViT) for Digital Holography}.
 
-\subsection{Subsection Heading}
-There are five class-specific commands for the preamble\sidenote{The \texttt{sidenote}
-command has been provided for compatibility with some other class files}.
-Table~(\ref{tab:the-only-table}) describes these commands\sidenote{It is better to use
-\texttt{footnote} instead}. Some convenience macros such as \texttt{C}, \texttt{L},
-\texttt{R}, \texttt{D[<length>]} have been provided for aligning the text within the
-columns of a table.
+Where even complex and robust algorithms fail, there is an opening for neural networks to
+attempt to fill in. In the past quarter of this century, we have seen artificial
+intelligence go from a mostly philosophical question, to a real application with broad
+use cases, such as imaging \autoref{quartz}. A revelation took place with the successful
+results from ImageNet classification in 2017, where researchers had successfully employed
+a CNN to correctly classify millions of images based on what the subject of the image was
+\autoref{ImageNet}. These models have been "increasingly applied in the digital
+post-processing of optical signals" effectively serving as both the foundation and
+inspiration for this work \autoref{TorchOptics: An open-source Python library for
+differentiable Fourier optics simulations}.
+
+The idea that classification of enormous amounts of complicated visual data could be done
+by anything other a human working with sophisticated and tailor made computer vision
+tools was seldom given real thought. Neural networks have since seen an exponential
+amount of use and improvements, leaving the door open for use in tasks such as finding
+that desired focus depth.
+
+\subsection{Implementation}
+\hspace*{6mm} Therefore I put this tool to work on that exact purpose, feeding a CNN the
+labelled holograms on a magnitude that would take years for an individual researcher to
+process on their own, is sent to the model over the course of minutes. The information it
+gathers and iterates on is all in service of training the model to either classify the
+image's depth to regress the optimal propagation distance \$z\$ directly from the raw
+hologram. In this way the model is essentially taking guesses and seeing what inferences
+and approaches best serve getting that correct answer.
+
+With the training completed, the model can be saved for later use, thus allowing for
+training not only on a singular set of data, but various other setups, implementations
+etc. This allows for a broad application not only limited to whatever one individual
+researcher might have on hand. This solves one of the issues described previously, the
+rigidity of traditional methods of autofocus lack broad application. The ability for a
+CNN to be adapted to its environment by simply being surrounded by new information to
+update it's weights allows for a potential upside to such a method.
+
+This however creates a new set of information to improve, that of the data the CNN is
+trained on. It is essential that any baseline set of data be chosen wisely. The neural
+network is not like a static computer vision tool that ought to give you the same result
+when repeatedly applied to the same sample, the learning nature of an AI makes it
+necessary that some randomness exist. Thus, to minimize the "bad" randomness, we can
+alter the data upon which it is trained, and can weed out any information that might push
+the network down an incorrect path.
+
+% ------------------------------------------------------------
+
+% ------------------------------------------------------------
+\section{Methodology}
+
+When training a model there are some high level attributes to tune, such as the
+percentage split between testing and validation. I go with a default of $80-20$, with the
+majority going toward training, which is a standard split \autoref{Convolutional Neural
+Network (CNN) vs Vision Transformer (ViT) for Digital Holography}.
+
+\subsection{Network architecture}
+The backbone is I implement is primarily \textbf{EfficientNet‑B4} (\cite{tan2019efficientnet})
+pre‑trained on ImageNet; the classification head is replaced by a
+single linear neuron for regression:
+\begin{lstlisting}[style=python,caption={Head replacement in \texttt{epoch\_helper.get\_model()}}]
+selected_model = models.efficientnet_b4(weights=...)  # 179M params
+in_feats = selected_model.classifier[1].in_features
+selected_model.classifier[1] = nn.Linear(in_feats, 1)
+\end{lstlisting}
+What this means practically is that the model's classification leads to a single
+prediction rather than trying to classify the image into a set bin of $z_{depth}$.
+The main reason why I went with this model is due to my code initially being focused
+solely on classification and this being a relatively small model means it can easily
+applied. However, due to limitations with respect to the availability of well labeled and
+large datasets, the span of my data was quite low. Meaning that my code was effectively
+limited in the number of bins to classify into, thus leading to my refactoring of the
+code to primarily utilize a regression approach.
+
+\subsection{Training procedure}
+To implement such an approach my code utilizes a few core torch functionalities when
+training the model. First my code loads in data from a selected csv file which contains
+the mappings to each image in the dataset along with its relevant attributes such as the
+wavelength of light used in imaging and the depth of $z$ for the hologram. My code has a
+number of checks against potentially corrupt or incomplete data.
+
+In the \texttt{HologramFocusDataset} class I check if any of the images in the dataset do
+not exist, or if the do exist that they are properly encoded. This serves two functions,
+where it not only prevents corrupt or missing data from staying stored in any sub class
+and being passed on to be trained on, but it also allows for the partial training or
+evaluation of the model on a dataset. This second point is not typically what is
+considered when performing this kind of error handling, however in the case of imaging
+specifically there is a desire to potentially have a limited sample set. Hologram image
+files used in microscopy are typically extremely large as to retain the maximum amount of
+physical meaning before reconstruction, this would mean that processing a complete
+dataset could be very computationally intensive for even a small amount of training.
+Thus, partial training allows for the user to get a cursory understanding of how
+different model backbones might perform with their own data, and how many system
+resources it might require to include to process their whole dataset.
+
+From this dataset class I have two sub classes, one for processing particularities with
+the HQ-DLHM-OD-Databse dataset, and another for actually applying the transformation of
+the data to, thus preserving the original class and its information for use at any later
+point. This approach allows for the easy addition of another class for whatever
+particular date the user might have, and simply pointing the parent class to handle
+anything that ought to be universal for any dataset.
+
+For the actual training of the model, I utilize another class, a lightweight dataclass
+\texttt{AutoConfig}, for everything not explicitly linked to the datasets, this helps
+keep the code more segmented and thus allows for easily accessing the information needed
+at any part of the training, without having to invoke the dataset class itself which
+contains much more information than needed.
+
+\subsubsection{Regression}
+To perform regression training their are some key differences from classification to
+address, the main one being that of bins. Since the model expects to be given a bin to
+place the image depth into, there needs to be some bin that exists. Thus, to circumvent
+this in a way that allows for a continuous prediction we simply reduce the number of bins
+to one.
+
+To steer the model in the correct direction during its training, we utilize the
+criterion Smooth L1 loss with the optimizer AdamW ($\eta=\SI{5e-5}{}$). The loss measurer
+essentially gives feedback to the model telling how well it is doing relative to each
+epoch. While the optimizer AdamW is a gradient descent algorithm that adjusts the
+learning rate to better fit the stream of information. It does so by taking the mean and
+variance, and then applying a bias correction to these values, before updating the
+weights utilizing this new estimate
+\autoref{https://www.geeksforgeeks.org/adam-optimizer/}. This is used in conjunction with
+a scheduler, \texttt{ReduceLROnPlateau}, which lowers the learning rate by a factor of 10
+if validation MAE stalls for five epochs. These three form the guardrails that guide the
+regression model to a better result. All experiments use the seed 42 to ensure
+reproducibility, although this function can be removed if this is not desired.
+
+\subsubsection{Classification}
+My code is still largely focused on the regression approach as mentioned above, but my
+code does allow for classification training to be used simply by passing the \texttt{-c}
+flag to the training function. From here the training is switched onto a different track,
+still running through the same functions as to make use of their largely shared basis for
+training. Of note is that the optimizer and scheduler remain the same, while the
+criterion is replaced with \texttt{CrossEntropyLoss}, a measurer of loss better suited to
+discrete classification.
+
+Further, bins are now important for classification, therefore in the dataset class I go
+through a rigorous test to ensure that the number of bins, width of bins, and quantity in
+each bin is satisfactory for classification. My code does not raise an error for the most
+part during this, however it does log errors to the console and \texttt{debug.log} file
+as to inform the user of the corrections being made or issues that must be ignored.
+
+This process of binning and properly assessing the bins quality, has the potentially for
+being computationally more efficient than regression, however none of the above setup is
+necessary for the regression setup, which creates a double edged sword. I do not have to
+ensure a robust dataset exists which provides a solid foundation for training exists,
+instead, I leave it up to the user to decide whether their data is representative enough
+to be trained on.
+
+\subsection{Implementation notes}
+\begin{itemize}
+  \item CLI entry‑point: \texttt{scripts/main.py train}
+  \item Progress bars: Rich (Figure\ref{fig:rich})
+  \item Unit safety: all physical quantities are stored in \emph{metres}
+    (see \texttt{dataset.HologramFocusDataset}).
+\end{itemize}
+There are some peculiarities of the database I am I using to produce the metrics of how
+my my code works. The HQ-DLHM-OD-Databse is one of the few easily accessible, large, and
+labeled hologram datasets I could find \autoref{https://osf.io/syht9/}. The dataset was
+captured using an 8-bit monochromatic camera, MN34230 sensor, with a 3.8 um pixel size,
+with a resolution that is not a square. Thus, I implement checks to ensure the image is
+cropped to the largest possible square.
+
+Aside from my data used, I also implemented a progress bar for use during epoch
+iterations, as the process can take a long time to complete, and seeing how the model
+updates in real time can be important to ensure the model isn't going off in an obviously
+wrong direction. It serves this functionality well, as it nicely reads out the current
+assigned learning rate, progress on the current batch and epoch, as well as the
+validation and training loss. Further from the same \texttt{Rich} package I utilize it as
+a logger to display a stopwatch metric of sorts for the validation process, which simply
+reads out the time taken for each validation loop. Thus, the user has direct access to
+all of the relevant information during training and can make adjustments without having
+to wait for a complete training cycle to continue.
+
+To demo the code as a complete package, going dataset to result, I include a small
+function to actually reconstruct images provided
+and compare how the model's predictions line up with the true or "ground truth" values of
+the actual holograms. This functionality is not demoed in this paper however, due to the
+lack of well labeled and accessible hologram data that includes both phase and depth measurements.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.88\textwidth]{figures/rich_bar.png}
+  \caption{A sample of how the code's progress bar and indicators look, coded using the
+  \texttt{Rich} module.}
+  \label{fig:rich}
+\end{figure}
+
+% ------------------------------------------------------------
+\section{Evaluation metrics}
+\begin{description}
+  \item[MAE]  Mean average error $|z\_{\text{pred}}-z\_{\text{true}}|$.
+  \item[Residual plots]  Signed error vs. ground truth (Fig.\ref{fig:res_test} & \ref{fig:res_val}).
+  \item[Violin plots]   Error distribution per depth slice(Fig. \ref{fig:vio_test} &
+    \ref{fig:vio_val}) .
+  \item[Hex‑bin]        2‑D density of predictions vs. truth.
+\end{description}
+Due to the lack of robust accuracy evaluations that can be preformed here due to the
+limitation on data, a large part of my code's error analysis concerns the self
+consistency of error, in that I still recover meaningful metrics concerning the precision
+of the model.
+
+To do so I use a wide variety of metrics, the simplest being the mean average error,
+which in some cases I reduce further to the normalized root mean squared error (NRMSE) as
+to ensure their isn't a massive error between the prediction and the expected. This is
+best shown via residual plots referenced above, that show the visual difference from two
+distributions. This allows for the user to pick out any particular region that might show
+a blindspot of the data or how the model predicts.
+
+To showcase how error varies with prediction range, I utilize violin plots, named for the
+shape the curves create, filling in a region of peaks and valleys not unlike a violin.
+The area that is plotted showcases if their is variation across different regions, which
+could be another indicator of insufficient data or something else. Such a plot can inform
+the user about whether the data can be used for inferencing purposes, as you might have a
+relatively large amount of error at the extremes of your prediction values, which ought
+to soften any conclusions beyond what has already been analyzed.
+
+For an absolute measure of quality, one common and relatively simple metric is the peak
+signal to noise ratio
+\ref{https://www.researchgate.net/publication/303517356_Comparison_of_image_quality_assessment_PSNR_HVS_SSIM_UIQI}.
+This essentially measures the total magnitude of output pixels, compared to what the
+maximum could have been. Which gives you a measure of how much information you recovered
+relative to the total information available to you.
+
+% ------------------------------------------------------------
+\section{Results}\label{sec:results}
+
+My code can complete $30$ epochs after two hours on my system, using the \texttt{efficientnet\_b4}
+model with a learning rate of $1e-4$, crop size of $256$, batch size of $16$, I was able
+to see a massive improvement from epoch to epoch as the model consistently improved as
+more time elapsed, starting at a training loss of $0.00151519$, evaluation loss of
+$0.0035268$ and mean average error of $0.0000000109$, to train loss $0.00060473$, val
+loss $0.00016834$, and val Mae of $0.0000000076$ after one epoch. The results shown here
+in the plots are from the model after completing the $30$ epochs however.
+
+The residual plots don't describe any particular meaningful error, it seems as if the
+training prefers to undervalue the predicted values. Further, I have left in the
+classification hex binning plots \ref{fig:hex_test} and \ref{fig:hex_val}, simply because
+they do display the distribution of the predictions, which follow a normal curve, showing
+that we have successfully prevented any systematic bias from occurring.
+
+To see what a sample of classification could give, I do provide the model's
+classification training  plot from an earlier iteration of the code, which should serve
+as a proof of concept concerning the potentiality of utilizing this alongside a robust
+dataset \ref{fig:classificaton}.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.48\textwidth]{figures/residual_vs_true_train.png}
+  \caption{Residual error as a function of true depth.}
+  \label{fig:res_test}
+\end{figure}
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.48\textwidth]{figures/residual_vs_true_val.png}
+  \caption{Residual error as a function of true depth.}
+  \label{fig:res_val}
+\end{figure}
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.48\textwidth]{figures/error_violin_train.png}
+  \caption{Residual error as a function of true depth.}
+  \label{fig:vio_test}
+\end{figure}
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.48\textwidth]{figures/error_violin_val.png}
+  \caption{Residual error as a function of true depth.}
+  \label{fig:vio_val}
+\end{figure}
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.48\textwidth]{figures/focus_depth_actual_vs_pred_50ep_sig1_heat.png}
+  \caption{Residual error as a function of true depth.}
+  \label{fig:classificaton}
+\end{figure}
+
+% ------------------------------------------------------------
+\section{Conclusion and future work}
+
+For the limited training done, the network converged to the global mean when trained on the
+range of the original data (see Figure\ref{fig:hex}).  Enlarging
+the range to \SI{0}{\micro\metre}–\SI{40}{\micro\metre} or introducing
+physics‑based augmentations to the dataset is expected to alleviate this collapse onto
+one value. This is assumed to be the case due to the robust metrics that have been output
+by the model showing that the internals of the system produce high precision results.
+
+We demonstrated an end‑to‑end pipeline for learning autofocus depths
+from raw holograms.  While initial results highlight the challenges of
+regressing over such a small span, the framework is ready for larger or
+synthetic datasets and provides the framework for formulations combining regression
+and classification.
+
+The framework of my program is setup such that it can easily be expanded upon with the
+framework, dataset, and even goal agnostic approach I have taken here. With a proper goal
+in mind, it is easy to see how my framework can be easily deployed to help streamline the
+reconstruction process.
+
+To truly put the model to the test, it could be implemented in a live environment where
+information is being sent directly from a lab DHM setup to a program making predictions
+and updating its weights in real time as imaging is being done, then this could become a
+two way street, where the experiment can be improved alongside the autofocus model, in a
+symbiotic way.
+
+% ------------------------------------------------------------
+
+% ------------------------------------------------------------
 \appendix
+\section{Key training command}
+\begin{lstlisting}[style=python]
+uv run --scripts main.py train&#x20;
+\--backbone efficientnet\_b4 --crop 224 --batch 16&#x20;
+\--ep 50 --lr 1e-4 --device cuda
+\end{lstlisting}
 
-% \renewcommand{\theequation}{\thesection.\arabic{equation}}
-% \setcounter{equation}{0}
+\section{Additional figures}
+% add extra plots if necessary
 
-\section{Appendix Section Heading}
-Lorem ipsum dolor sit amet, consectetur adipisicing elit, sed do eiusmod tempor
-incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud
-exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure
-dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.
-Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit
-anim id est laborum.
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.48\textwidth]{figures/hexbin_train.png}
+  \caption{Residual error as a function of true depth.}
+  \label{fig:hex_test}
+\end{figure}
 
-\subsection{Appendix Subsection Heading}
-Lorem ipsum dolor sit amet, consectetur adipisicing elit, sed do eiusmod tempor
-incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud
-exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure
-dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.
-Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit
-anim id est laborum.
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.48\textwidth]{figures/hexbin_val.png}
+  \caption{Residual error as a function of true depth.}
+  \label{fig:hex_val}
+\end{figure}
 
-\subsubsection{Appendix Subsubsection Heading}
-Lorem ipsum dolor sit amet, consectetur adipisicing elit, sed do eiusmod tempor
-incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud
-exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure
-dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.
-Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit
-anim id est laborum.
+\end{document}
 
 \begin{center}
   \vspace*{0.5em}
