@@ -3,7 +3,6 @@ import random
 import numpy as np
 import torch
 import torch.nn as nn
-from rich.console import Console
 from rich.progress import BarColumn
 from rich.progress import Progress
 from rich.progress import SpinnerColumn
@@ -20,6 +19,8 @@ from torch.utils.data import DataLoader
 from torchvision import models
 
 from holo.util.list_helper import print_list
+from holo.util.log import console_ as console
+from holo.util.log import log_timing
 from holo.util.log import logger
 from holo.util.prog_helper import MetricColumn
 from holo.util.prog_helper import RateColumn
@@ -38,7 +39,6 @@ def setup_rich_progress(train_type: str):
         accuracy_measure = "val_mae"
         acc_col = MetricColumn(accuracy_measure, fmt="{:.2}", style="green")
 
-    console = Console()  # allows rich to automatically set certain items depending on terminal
     progress = Progress(
         TextColumn("[bold blue]{task.description}"),
         BarColumn(bar_width=None),
@@ -52,13 +52,13 @@ def setup_rich_progress(train_type: str):
         acc_col,
         MetricColumn("lr", fmt="{:.2e}", style="bright_black"),
         SpinnerColumn(),  # shows in progress tasks
-        console=console,
+        console=console,  # allows rich to automatically set certain items depending on terminal
         transient=False,  # keep the bars on screen after finishing
     )
     return progress
 
 
-def get_model(num_classes: int = 1, backbone: str = "efficientnet_b4"):
+def get_model(num_classes: int = 20, backbone: str = "efficientnet_b4"):
     """Load a pre-trained model and adapts its final layer for the given number of classes.
 
     Args:
@@ -84,9 +84,9 @@ def get_model(num_classes: int = 1, backbone: str = "efficientnet_b4"):
     elif backbone.startswith("vit"):
         selected_model = create_model("vit_base_patch16_224", pretrained=True, num_classes=num_classes)
     else:
-        raise NameError(
-            logger.exception(f"Unknown backbone: {backbone}, known backbones include: "), print_list(known_backbones)
-        )
+        logger.exception(f"Unknown backbone: {backbone}, known backbones include: ")
+        print_list(known_backbones)
+        raise NameError
 
     return selected_model
 
@@ -106,6 +106,7 @@ def set_seed(seed: int = 42):
 
 def train_epoch(
     model: Module,
+    analysis: str,
     loader: DataLoader[tuple[Tensor, Tensor]],
     criterion: Module,
     optimizer: Optimizer,
@@ -117,6 +118,7 @@ def train_epoch(
 
     Args:
         model (Module): The model which ought to undergo training.
+        analysis (str): Type of analysis to train model for (regression "reg" or classification).
         loader (DataLoader): Iterable that contains the portion of training dataset samples.
         criterion (Module): Measurer of error, as prediction probability diverges, this will generate greater values.
         optimizer (Optimizer): Algorithm used to steer the model in the correct direction.
@@ -139,13 +141,15 @@ def train_epoch(
         imgs, labels = imgs.to(torch_device), labels.to(torch_device)  # associate torch tensor with device
 
         optimizer.zero_grad()  # reset gradients each loop
-        # logger.debug(f"reached point here with {imgs} and labels {labels}")
-        outputs = model(imgs).squeeze(1)  # pass in tensors of images, to get output of tensor data
-        # logger.debug(f"reached point here with {outputs}")
+        outputs = model(imgs)  # pass in tensors of images, to get output of tensor data
+
+        # reduce tensor size down to one dimension as we are only looking for one prediction
+        if analysis == "reg":
+            outputs = outputs.squeeze(1)
+
         loss_current = criterion(outputs, labels)  # find loss
-        # logger.debug(f"reached point here with {loss_current}")
         loss_current.backward()  # compute the gradient of the loss
-        optimizer.step()  # compute one step of the optimization algorithim
+        optimizer.step()  # compute one step of the optimization algorithm
 
         loss += loss_current.item() * imgs.size(0)  # sum the value of the loss, scaled to the size of image tensor
         prog.update(task_id, advance=1, loss=f"{loss_current.item():.4f}")  # update progress bar
@@ -161,31 +165,35 @@ def train_epoch(
 
 def validate_epoch(
     model: Module,
+    analysis: str,
+    z_sigma: float,
+    z_mu: float,
     loader: DataLoader[tuple[Tensor, Tensor]],
     criterion: Module,
     device: str,
     # bin_centers,
 ) -> tuple[float, float]:
     """Validate and compute the accuracy of one epoch."""
-    model.eval()
-    loss: float = 0
-    # correct: int = 0
-    abs_err_sum: float = 0
-    total: int = 0
+    with log_timing("Epoch validation"):
+        model.eval()
+        loss: float = 0
+        # correct: int = 0
+        abs_err_sum: float = 0
+        total: int = 0
 
-    with torch.no_grad():  # reduces memory consumption when doing inference, as is the case for validation
-        for imgs, labels in loader:
-            imgs, labels = imgs.to(device), labels.to(device)
-            output = model(imgs).squeeze(1)
+        with torch.no_grad():  # reduces memory consumption when doing inference, as is the case for validation
+            for imgs, labels in loader:
+                imgs, labels = imgs.to(device), labels.to(device)
+                output = model(imgs).squeeze(1)
+                current_loss = criterion(output, labels)
+                loss += current_loss.item() * imgs.size(0)
 
-            current_loss = criterion(output, labels)
-            loss += current_loss.item() * imgs.size(0)
+                # de-normalise as tensors
+                z_pred_m = output * z_sigma + z_mu  # still on GPU
+                z_true_m = labels * z_sigma + z_mu
 
-            z_pred = output
-            z_true = labels
-
-            abs_err_sum += torch.sum(torch.abs(z_pred - z_true)).item()
-            total += z_true.numel()
+                abs_err_sum += torch.sum(torch.abs(z_pred_m - z_true_m)).item()
+                total += z_true_m.numel()  # or imgs.size(0)
 
     dataset_len = len(loader.dataset) if loader.dataset is not None else 0
     if dataset_len == 0:
@@ -193,6 +201,5 @@ def validate_epoch(
 
     avg_loss = loss / total
     mae = abs_err_sum / total  # in metres if z is metres
-    logger.debug(f"Val MAE : {mae * 1e6:.2f} µm")  # convert metres → µm
-    # TODO: make work for class vs reg <luxShrine >
+    logger.debug(f"Val MAE : {mae:.2f} m")  # convert metres → µm
     return avg_loss, mae
