@@ -3,6 +3,7 @@ from typing import Any
 from typing import TypeVar
 
 from PIL.Image import Image as ImageType
+from torch import Tensor
 from torch.utils.data import Dataset
 from torch.utils.data import Subset
 
@@ -14,7 +15,7 @@ _T_co = TypeVar("_T_co", covariant=True)
 class TransformedDataset(Dataset[tuple[Any, Any]]):
     """Apply transforms by creating a wrapper dataset to avoid modifying original HologramFocusDataset."""
 
-    def __init__(self, subset: Subset[_T_co], transform: Callable[[Any], Any] | None):
+    def __init__(self, subset: Subset[_T_co], transform: Callable[[Any], Any] | None, dataset_bin_ids: Tensor):
         """Initialize the TransformedDataset.
 
         Args:
@@ -25,6 +26,7 @@ class TransformedDataset(Dataset[tuple[Any, Any]]):
         """
         self.subset: Subset[_T_co] = subset
         self.transform = transform
+        self.dataset_bin_ids = dataset_bin_ids
 
     def __getitem__(self, index: int) -> tuple[ImageType, int]:
         """Retrieve an item from the dataset by index and applies the transform.
@@ -38,11 +40,13 @@ class TransformedDataset(Dataset[tuple[Any, Any]]):
                              depend on the subset and the transform.
 
         """
-        x, y = self.subset[index]  # type: ignore
+        original_idx = self.subset.indices[index]  # type: ignore
+        item = self.subset[index]  # type: ignore
+        x = item[0]  # type: ignore
         if self.transform:
             # Transform applies to x
             x = self.transform(x)  # Type of x might change here
-        return x, y  # type: ignore
+        return x, self.dataset_bin_ids[original_idx]  # type: ignore
 
     def __len__(self) -> int:
         """Return the total number of items in the dataset."""
