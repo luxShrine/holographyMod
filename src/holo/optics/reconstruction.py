@@ -50,7 +50,8 @@ def torch_recon(
     # build architecture + load weights
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    ckpt = torch.load(ckpt_file, map_location=device, weights_only=True)  # type: ignore
+    ## WARN: This is iffy
+    ckpt = torch.load(ckpt_file, map_location=device, weights_only=False)  # type: ignore
     bin_centers = ckpt["bin_centers"]
 
     model = eh.get_model(ckpt["num_bins"], backbone).to(device)
