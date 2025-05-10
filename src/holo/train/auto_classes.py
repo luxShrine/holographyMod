@@ -59,6 +59,7 @@ class AutoConfig:
         self.data.update(
             {
                 "meta_csv_name": self.meta_csv_name,
+                "auto_method": self.auto_method,
                 "num_workers": self.num_workers,
                 "batch_size": self.batch_size,
                 "val_split": self.val_split,
