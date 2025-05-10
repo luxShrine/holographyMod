@@ -12,8 +12,6 @@ src/holo/optics/reconstruction.py
 src/holo/train/__init__.py
 src/holo/train/auto_caller.py
 src/holo/train/auto_classes.py
-src/holo/train/auto_classification.py
-src/holo/train/auto_regression.py
 src/holo/train/epoch_helper.py
 src/holo/util/__init__.py
 src/holo/util/crop.py
@@ -25,6 +23,7 @@ src/holo/util/output.py
 src/holo/util/paths.py
 src/holo/util/prog_helper.py
 src/holo/util/saveLoad.py
+src/holo/util/units.py
 src/holographyMod.egg-info/PKG-INFO
 src/holographyMod.egg-info/SOURCES.txt
 src/holographyMod.egg-info/dependency_links.txt
