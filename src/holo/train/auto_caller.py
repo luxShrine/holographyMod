@@ -21,7 +21,6 @@ from holo.data.dataset import HQDLHMDataset
 from holo.data.transformed_dataset import TransformedDataset
 from holo.train.auto_classes import AutoConfig
 from holo.util.list_helper import convert_array_tolist_type
-from holo.util.list_helper import print_list
 from holo.util.log import logger
 from holo.util.saveLoad import plotPred
 
@@ -77,64 +76,64 @@ def _setup_dataloaders(
     if dataset_name in known_dataset_forms:
         full_dataset = HQDLHMDataset(meta_csv_name, crop=crop_size, mode=auto_method)
         total_ids = full_dataset.bin_ids
+        z_sig = full_dataset.z_sigma
+        z_mu = full_dataset.z_mu
     else:
-        logging.exception(
-            "Dataset's other than",
-            print_list(known_dataset_forms),
-            "might not be implemented properly, try formatting dataset as previously mentioned datasets, and \
-            try again with one of their opitons.",
+        logger.exception(
+            f"Selected dataset's may not be implemeted, try with any of the supllied items: {known_dataset_forms}"
         )
         raise Exception
     # extra check to see if dataset is loaded properly, doesn't contain surprises
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(np.unique(full_dataset.bin_ids).size)
-        logger.debug(full_dataset.bin_edges[:10])
+        logger.debug(full_dataset.bin_edges_m[:10])
 
-    # get centers of dataset for parsing
-    data_bin_centers = full_dataset.bin_centers
+    if auto_method == "reg":
+        # get centers of dataset for parsing
+        z_val = full_dataset.z_m
+        evaluation_metric = z_val
+    else:
+        # get centers of dataset for parsing
+        data_bin_centers = full_dataset.bin_centers
+        evaluation_metric = data_bin_centers
 
     # Splits index into validation and train
     dataset_size: int = len(full_dataset)
     val_size: int = int(val_split * dataset_size)
-    train_size: int = dataset_size * int(1 - val_split)
-    test_size: int = dataset_size - (train_size + val_size)  # whatever is leftover (currently intended to be zero)
-
-    # assigns the images randomly to each subset based on intended ratio
-    train_ds_untransformed, val_ds_untransformed, test_ds_untransformed = random_split(
-        full_dataset, [train_size, val_size, test_size]
-    )
+    train_size: int = dataset_size - val_size
+    # test_size: int = dataset_size - (train_size + val_size)  # whatever is leftover (currently intended to be zero)
 
     train_transform, val_transform = _get_transformation(crop_size, grayscale)
 
+    # assigns the images randomly to each subset based on intended ratio
+    train_ds_untransformed, val_ds_untransformed = random_split(full_dataset, [train_size, val_size])
     # Assign the transformed datasets
     train_ds: TransformedDataset = TransformedDataset(train_ds_untransformed, train_transform, total_ids)
     val_ds: TransformedDataset = TransformedDataset(val_ds_untransformed, val_transform, total_ids)
-    test_ds: TransformedDataset = TransformedDataset(test_ds_untransformed, val_transform, total_ids)
 
-    # create data loaders, which just allow the input of data to be iteratively called
-    selected_train_loader = DataLoader(
-        train_ds,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True,
-    )
-    selected_val_loader = DataLoader(
-        val_ds,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True,
-    )
-    selected_test_loader = DataLoader(
-        test_ds,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True,
-    )
-
-    return selected_train_loader, selected_val_loader, selected_test_loader, data_bin_centers, train_ds, val_ds
+    try:
+        # create data loaders, which just allow the input of data to be iteratively called
+        selected_train_loader = DataLoader(
+            train_ds,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            pin_memory=True,
+        )
+        selected_val_loader = DataLoader(
+            dataset=val_ds,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=True,
+        )
+        return selected_train_loader, selected_val_loader, evaluation_metric, train_ds, val_ds, z_sig, z_mu
+    except:
+        logger.exception(
+            f"Error occurerd at final stage of creating dataloaders\t \
+            train: {train_size} | val: {val_size} | "
+        )
+        raise
 
 
 def _create_optimizer(
@@ -148,9 +147,10 @@ def _create_optimizer(
     """ """
     known_optimizers = ["adam"]
     if optimizer_type not in known_optimizers:
-        raise NameError(
-            logger.exception("Selected optimizer not currently implemeted, try with: ", print_list(known_optimizers))
+        logger.exception(
+            f"Selected optimizer not currently implemeted, try with any of the supllied items: {known_optimizers}",
         )
+        raise NameError
     else:
         # common optimization algorithm, adapts learning rates
         selected_optimizer = torch.optim.AdamW(model.parameters(), lr=opt_lr, weight_decay=opt_weight_decay)
@@ -161,17 +161,17 @@ def _create_optimizer(
         return selected_optimizer, selected_scheduler
 
 
-def _create_loss_function(model_goal: str = "reg"):
+def _create_loss_function(analysis: str = "reg"):
     """Create manager of loss.
 
     Args:
-        model_goal: "reg" or "class" The type of analysis the model is doing (Classification or Regression).
+       analysis: "reg" or "class" The type of analysis the model is doing (Classification or Regression).
 
     Returns:
         The criterion for loss measurements.
 
     """
-    if model_goal != "reg":
+    if analysis != "reg":
         return nn.CrossEntropyLoss()
     else:
         return nn.SmoothL1Loss()
@@ -185,21 +185,15 @@ def train_autofocus_refactored(config: AutoConfig):
     config_as_dict = asdict(config)  # convert to dict so it can easily be passed into functions
 
     # Setup data
-    train_loader, val_loader, test_loader, bin_centers, train_ds, val_ds = _setup_dataloaders(**config_as_dict["data"])
-
-    # check to see if testing is expected
-    try:
-        if len(test_loader) > 0:
-            logger.warning(f"test loader contains {len(test_loader)} items")
-        else:
-            pass
-    except Exception as e:
-        logger.exception(e)
+    train_loader, val_loader, eval_metric, train_ds, val_ds, z_sig, z_mu = _setup_dataloaders(**config_as_dict["data"])
 
     # setup paths for model checkkpoints
     Path(config.out_dir).mkdir(exist_ok=True)  # ensure that the output directory exists, if not, create it
     path_to_checkpoint: Path = Path(config.out_dir) / Path("latest_checkpoint.pth")
     path_to_model: Path = Path(config.out_dir) / Path("best_model.pth")
+
+    # create device variable
+    device = config.device()
 
     # Setup model, optimizer, loss function (details depend on your setup)
     model = eh.get_model(**config_as_dict["model"])
@@ -209,10 +203,7 @@ def train_autofocus_refactored(config: AutoConfig):
     # Setup progress display
     progress_bar = eh.setup_rich_progress(config.auto_method)
 
-    # WARN: move prog to epoch? <luxShrine>######################################################################
-    # epoch_task = progress.add_task(
-    #     "Epoch", total=epochs, avg_loss=0, val_loss=0, val_acc=0, lr=optimizer.param_groups[0]["lr"]
-    # )
+    # TODO: move prog to epoch? <luxShrine>
     epoch_task = progress_bar.add_task(
         "Epoch",
         total=config.epoch_count,
@@ -223,7 +214,6 @@ def train_autofocus_refactored(config: AutoConfig):
     )
     # batch_task = progress.add_task("Batch", total=len(train_loader), batch_loss = 0, avg_loss=0)
     batch_task = progress_bar.add_task("Batch", total=len(train_loader), avg_loss=0)
-    #########################################################################################################
 
     # TODO: Define autofocus-specific callbacks/evaluators
     # autofocus_evaluator = AutofocusMetrics(gather_z_fn=gather_z_preds, plot_fn=plotPred)
@@ -247,10 +237,17 @@ def train_autofocus_refactored(config: AutoConfig):
             progress_bar.reset(batch_task, total=len(train_loader), batch_loss=0, avg_loss=0)
             # Train
             epoch_train_loss = eh.train_epoch(
-                model, train_loader, loss_fn, optimizer, config.device(), batch_task, progress_bar
+                model=model,
+                analysis=config.auto_method,
+                loader=train_loader,
+                criterion=loss_fn,
+                optimizer=optimizer,
+                device=device,
+                task_id=batch_task,
+                prog=progress_bar,
             )
             # validate, val_metrics[0] = avg_loss; val_metrics[1] = mae or accuracy
-            val_metrics = eh.validate_epoch(model, val_loader, loss_fn, config.device())
+            val_metrics = eh.validate_epoch(model, config.auto_method, z_sig, z_mu, val_loader, loss_fn, device)
             epoch_val_loss = val_metrics[0]  # this is always the value across different types of training
 
             # go to next step
@@ -260,9 +257,14 @@ def train_autofocus_refactored(config: AutoConfig):
             train_loss.append(epoch_train_loss)
             val_loss.append(val_metrics[0])
 
-            bin_centers_tensor = torch.as_tensor(bin_centers)
-
-            logger.debug(f"Val MAE/Acc : {val_metrics[1] * 1e6:.2f} µm")  # convert metres → µm
+            if config.auto_method == "reg":
+                # using z value
+                labels_tensor = torch.as_tensor(eval_metric, dtype=torch.float32)
+                logger.debug(f"Val MAE: {val_metrics[1]:.9f} µm")
+            else:
+                # using bin value
+                labels_tensor = torch.as_tensor(eval_metric)
+                logger.debug(f"Val Acc: {val_metrics[1] * 100:.2f} %")  # percent
 
             # Save best model
             if val_metrics[1] < best_val_metric:
@@ -271,7 +273,8 @@ def train_autofocus_refactored(config: AutoConfig):
                     {
                         "epoch": epoch,
                         "model_state_dict": model.state_dict(),
-                        "bin_centers": bin_centers_tensor,
+                        "labels": labels_tensor,
+                        "bin_centers": getattr(train_ds, "bin_centers", None),
                         "num_bins": config.num_classes,
                     },
                     path_to_model,
@@ -282,8 +285,9 @@ def train_autofocus_refactored(config: AutoConfig):
                 {
                     "epoch": epoch,
                     "model_state_dict": model.state_dict(),
+                    "bin_centers": getattr(train_ds, "bin_centers", None),
                     "num_bins": config.num_classes,
-                    "bin_centers": bin_centers_tensor,
+                    "labels": labels_tensor,
                     "optimizer_state_dict": optimizer.state_dict(),
                     "train_loss": epoch_train_loss,
                     "val_loss": epoch_val_loss,
@@ -304,8 +308,8 @@ def train_autofocus_refactored(config: AutoConfig):
 
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
-                    f"Epoch {epoch}/{config.epoch_count}: Train Loss={epoch_train_loss:.4f} | \
-                    Val Loss={epoch_val_loss:.4f} | Val Mae/Acc={val_metrics[1]:.4f}"
+                    f"Epoch {epoch}/{config.epoch_count}: Train Loss={epoch_train_loss:.8f} | \
+                    Val Loss={epoch_val_loss:.8f} | Val Mae/Acc={val_metrics[1]:.10f}"
                 )
 
             # TODO: testing
@@ -323,11 +327,11 @@ def train_autofocus_refactored(config: AutoConfig):
     #     final_results = autofocus_evaluator.evaluate(model, test_loader, "final")
     #     logger.info(final_results)
 
-    logger.info(f"Training complete. Best Validation Metric: {best_val_metric:.4f}")
+    logger.info(f"Training complete. Best Validation Metric: {best_val_metric:.8f}")
     loss_hist = [train_loss, val_loss]  # return the history
 
-    train_z_pred, train_z_true = gather_z_preds(model, train_loader, train_ds, config.device())  # type: ignore
-    val_z_pred, val_z_true = gather_z_preds(model, val_loader, val_ds, config.device())  # type: ignore
+    train_z_pred, train_z_true = gather_z_preds(model, config.auto_method, train_loader, train_ds, device)  # type: ignore
+    val_z_pred, val_z_true = gather_z_preds(model, config.auto_method, val_loader, val_ds, device)  # type: ignore
 
     # force type
     val_z_pred_list = convert_array_tolist_type(val_z_pred, float)
@@ -335,12 +339,19 @@ def train_autofocus_refactored(config: AutoConfig):
     val_z_true_list = convert_array_tolist_type(val_z_true, float)
     train_z_true_list = convert_array_tolist_type(train_z_true, float)
 
-    # WARN: debug
-    print("unique train preds:", np.unique(train_z_pred)[:10], "…")
-    print("unique val   preds:", np.unique(val_z_pred)[:10], "…")
-    print("unique train true:", np.unique(train_z_true)[:10], "…")
+    # debug for classification bins
+    if logger.isEnabledFor(logging.DEBUG) and config.auto_method == "class":
+        logger.debug(
+            "unique train preds:",
+            np.unique(train_z_pred)[:10],
+            "…unique val   preds:",
+            np.unique(val_z_pred)[:10],
+            "…unique train true:",
+            np.unique(train_z_true)[:10],
+            "…",
+        )
 
-    # Plot Actual vs Predicted and save to output dir
+    # Actual vs Predicted diff
     train_err = np.abs(train_z_pred - train_z_true)
     val_err = np.abs(val_z_pred - val_z_true)
 
