@@ -1,11 +1,11 @@
-# `holographyMod`
+# CLI
 
 Hologram autofocus trainer / evaluator
 
 **Usage**:
 
 ```console
-$ holographyMod [OPTIONS] COMMAND [ARGS]...
+$ [OPTIONS] COMMAND [ARGS]...
 ```
 
 **Options**:
@@ -20,103 +20,84 @@ $ holographyMod [OPTIONS] COMMAND [ARGS]...
 
 - `train`: Train the autofocus model based on...
 - `plot-train`: Plot the data saved from autofocus training.
-- `reconstruction`: Peform reconstruction on an hologram.
-- `create-meta`: Build csv containing metadata of images in...
+- `reconstruction`: Perform reconstruction on an hologram.
+- `create-meta`: Build CSV containing metadata of images in...
 
-## `holographyMod train`
+## `train`
 
 Train the autofocus model based on supplied dataset.
-
-Args:
 
 **Usage**:
 
 ```console
-$ holographyMod train [OPTIONS] DS_ROOT
+$ train [OPTIONS] DS_ROOT
 ```
 
 **Arguments**:
 
-- `DS_ROOT`: [required]
-  - Directory containing hologram images.
+- `DS_ROOT`: Directory containing hologram images. [required]
 
 **Options**:
 
-- `--metadata TEXT`: [default: ODP-DLHM-Database.csv]
-  - Path to the metadata CSV file.
-- `--out TEXT`: [default: checkpoints]
-  - Directory to save checkpoints and logs.
-- `--backbone TEXT`: [default: efficientnet_b4]
-  - Model backbone name.
-- `--crop INTEGER`: [default: 512]
-  - Training batch size.
-- `--value-split FLOAT`: [default: 0.2]
-  - Size to crop images to.
-- `--batch INTEGER`: [default: 16]
-  - Number of training epochs.
-- `--ep INTEGER`: [default: 10]
-  - How fast should the model change epoch to epoch
-- `--learn-rate FLOAT`: [default: 0.0001]
-  - Fraction of data for validationw
-- `--device-type TEXT`: [default: cuda]
-  - Device ("cuda" or "cpu").
+- `--meta TEXT`: Path to the metadata CSV file. [default: ODP-DLHM-Database.csv]
+- `--out TEXT`: Directory to save checkpoints and logs. [default: checkpoints]
+- `--backbone, --bb TEXT`: Model backbone name. [default: efficientnet_b4]
+- `--crop, --c INTEGER`: Size to crop images to. [default: 512]
+- `--vs FLOAT`: Fraction of data for validation. [default: 0.2]
+- `--batch, --ba INTEGER`: Training batch size. [default: 16]
+- `--ep INTEGER`: Number of training epochs. [default: 10]
+- `--lr FLOAT`: How fast should the model change epoch to epoch [default: 0.0001]
+- `--device TEXT`: Device ("cuda" or "cpu"). [default: cuda]
+- `-c, --classfiication`: Change analysis type to classification
 - `--help`: Show this message and exit.
 
-## `holographyMod plot-train`
+## `plot-train`
 
 Plot the data saved from autofocus training.
 
 **Usage**:
 
 ```console
-$ holographyMod plot-train [OPTIONS]
+$ plot-train [OPTIONS]
 ```
 
 **Options**:
 
+- `-c, --classfiication`: Change analysis type to classification
 - `--help`: Show this message and exit.
 
-## `holographyMod reconstruction`
+## `reconstruction`
 
-Peform reconstruction on an hologram.
-
-Args:
+Perform reconstruction on an hologram.
 
 **Usage**:
 
 ```console
-$ holographyMod reconstruction [OPTIONS] IMG_FILE_PATH
+$ reconstruction [OPTIONS] [IMG_FILE_PATH] [MODEL_PATH] [BACKBONE] [CROP_SIZE] [WAVELENGTH] [Z] [DX]
 ```
 
 **Arguments**:
 
-- `IMG_FILE_PATH`: [required]
-  - Path to image for reconstruction
+- `[IMG_FILE_PATH]`: Path to image for reconstruction [default: best_model.pth]
+- `[MODEL_PATH]`: Path to trained model to use for torch optics analysis [default: best_model.pth]
+- `[BACKBONE]`: Model type being loaded [default: efficientnet_b4]
+- `[CROP_SIZE]`: Pixel width and height of image [default: 512]
+- `[WAVELENGTH]`: Wavelength of light used to capture the image (m) [default: 5.3e-07]
+- `[Z]`: Distance of measurement (m) [default: 0.02]
+- `[DX]`: Size of image px (m) [default: 1e-06]
 
 **Options**:
 
-- `--model-path TEXT`: [default: best_model.pth]
-  - Path to trained model to use for torch optics anaylsis
-- `--backbone TEXT`: [default: efficientnet_b4]
-  - Model type being loaded
-- `--crop-size INTEGER`: [default: 512]
-  - Pixel width and height of image
-- `--wavelength FLOAT`: [default: 5.3e-07]
-  - Wavelength of light used to capture the image (m)
-- `--z FLOAT`: [default: 0.02]
-  - Distance of measurement (m)
-- `--dx FLOAT`: [default: 1e-06]
-  - Size of image px (m)
 - `--help`: Show this message and exit.
 
-## `holographyMod create-meta`
+## `create-meta`
 
-Build csv containing metadata of images in hologram directory.
+Build CSV containing metadata of images in hologram directory.
 
 **Usage**:
 
 ```console
-$ holographyMod create-meta [OPTIONS] HOLOGRAM_DIRECTORY OUT_DIRECTORY
+$ create-meta [OPTIONS] HOLOGRAM_DIRECTORY OUT_DIRECTORY
 ```
 
 **Arguments**:

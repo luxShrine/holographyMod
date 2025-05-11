@@ -51,7 +51,7 @@ def train(
     ep: int = typer.Option(10, help="Number of training epochs."),
     learn_rate: float = typer.Option(1e-4, "--lr", help="How fast should the model change epoch to epoch"),
     device_type: str = typer.Option("cuda", "--device", help="Device ('cuda' or 'cpu')."),
-    analysis: bool = typer.Option(False, "--classfiication", "-c", help="Change anaylsis type to classification"),
+    analysis: bool = typer.Option(False, "--classfiication", "-c", help="Change analysis type to classification"),
 ) -> None:
     """Train the autofocus model based on supplied dataset."""
     # NOTE: quick test settings
@@ -104,7 +104,7 @@ def train(
 
 @app.command()
 def plot_train(
-    analysis: bool = typer.Option(False, "--classfiication", "-c", help="Change anaylsis type to classification"),
+    analysis: bool = typer.Option(False, "--classfiication", "-c", help="Change analysis type to classification"),
 ):
     """Plot the data saved from autofocus training."""
     plot_info_list = sl.load_obj()
@@ -173,7 +173,7 @@ def plot_train(
 @app.command()
 def reconstruction(
     img_file_path: str = typer.Argument("best_model.pth", help="Path to image for reconstruction"),
-    model_path: str = typer.Argument("best_model.pth", help="Path to trained model to use for torch optics anaylsis"),
+    model_path: str = typer.Argument("best_model.pth", help="Path to trained model to use for torch optics analysis"),
     backbone: str = typer.Argument("efficientnet_b4", help="Model type being loaded"),
     crop_size: int = typer.Argument(512, help="Pixel width and height of image"),
     wavelength: float = typer.Argument(530e-9, help="Wavelength of light used to capture the image (m)"),
