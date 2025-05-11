@@ -32,7 +32,7 @@ def main(
     set_verbosity(verbose)
 
     # If the user moved the log file, swap the FileHandler target.
-    if log_file != log_setup.file_handler.baseFilename:
+    if str(log_file) != log_setup.file_handler.baseFilename:
         log_setup.file_handler.close()
         log_setup.file_handler.baseFilename = str(log_file)
         log_setup.file_handler.stream = open(log_file, "a", encoding="utf-8")
@@ -200,7 +200,7 @@ def reconstruction(
 
 @app.command()
 def create_meta(hologram_directory: str, out_directory: str):
-    """Build csv containing metadata of images in hologram directory."""
+    """Build CSV containing metadata of images in hologram directory."""
     hologram_dir = Path(hologram_directory)
     out_dir = Path(out_directory)
 

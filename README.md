@@ -28,15 +28,6 @@ $ holographyMod [OPTIONS] COMMAND [ARGS]...
 Train the autofocus model based on supplied dataset.
 
 Args:
-metadata: Path to the metadata CSV file.
-out: Directory to save checkpoints and logs.
-backbone: Model backbone name.
-batch: Training batch size.
-crop: Size to crop images to.
-ep: Number of training epochs.
-learn_rate: How fast should the model change epoch to epoch
-value_split: Fraction of data for validationw
-device_type: Device ("cuda" or "cpu").
 
 **Usage**:
 
@@ -47,19 +38,28 @@ $ holographyMod train [OPTIONS] DS_ROOT
 **Arguments**:
 
 - `DS_ROOT`: [required]
-  - ds_root: Directory containing hologram images. 
+  - Directory containing hologram images.
 
 **Options**:
 
 - `--metadata TEXT`: [default: ODP-DLHM-Database.csv]
+  - Path to the metadata CSV file.
 - `--out TEXT`: [default: checkpoints]
+  - Directory to save checkpoints and logs.
 - `--backbone TEXT`: [default: efficientnet_b4]
+  - Model backbone name.
 - `--crop INTEGER`: [default: 512]
+  - Training batch size.
 - `--value-split FLOAT`: [default: 0.2]
+  - Size to crop images to.
 - `--batch INTEGER`: [default: 16]
+  - Number of training epochs.
 - `--ep INTEGER`: [default: 10]
+  - How fast should the model change epoch to epoch
 - `--learn-rate FLOAT`: [default: 0.0001]
+  - Fraction of data for validationw
 - `--device-type TEXT`: [default: cuda]
+  - Device ("cuda" or "cpu").
 - `--help`: Show this message and exit.
 
 ## `holographyMod plot-train`
@@ -81,13 +81,6 @@ $ holographyMod plot-train [OPTIONS]
 Peform reconstruction on an hologram.
 
 Args:
-img_file_path: Path to image for reconstruction
-model_path: Path to trained model to use for torch optics anaylsis
-backbone: Model type being loaded
-crop_size: Pixel width and height of image
-wavelength: Wavelength of light used to capture the image (m)
-z: Distance of measurement (m)
-dx: Size of image px (m)
 
 **Usage**:
 
@@ -98,15 +91,22 @@ $ holographyMod reconstruction [OPTIONS] IMG_FILE_PATH
 **Arguments**:
 
 - `IMG_FILE_PATH`: [required]
+  - Path to image for reconstruction
 
 **Options**:
 
 - `--model-path TEXT`: [default: best_model.pth]
+  - Path to trained model to use for torch optics anaylsis
 - `--backbone TEXT`: [default: efficientnet_b4]
+  - Model type being loaded
 - `--crop-size INTEGER`: [default: 512]
+  - Pixel width and height of image
 - `--wavelength FLOAT`: [default: 5.3e-07]
+  - Wavelength of light used to capture the image (m)
 - `--z FLOAT`: [default: 0.02]
+  - Distance of measurement (m)
 - `--dx FLOAT`: [default: 1e-06]
+  - Size of image px (m)
 - `--help`: Show this message and exit.
 
 ## `holographyMod create-meta`
