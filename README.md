@@ -28,7 +28,6 @@ $ holographyMod [OPTIONS] COMMAND [ARGS]...
 Train the autofocus model based on supplied dataset.
 
 Args:
-ds_root: Directory containing hologram images.
 metadata: Path to the metadata CSV file.
 out: Directory to save checkpoints and logs.
 backbone: Model backbone name.
@@ -48,6 +47,7 @@ $ holographyMod train [OPTIONS] DS_ROOT
 **Arguments**:
 
 - `DS_ROOT`: [required]
+  - ds_root: Directory containing hologram images. 
 
 **Options**:
 
