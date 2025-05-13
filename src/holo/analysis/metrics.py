@@ -1,13 +1,14 @@
 import warnings
-from pathlib import Path
+from pathlib import Path  # For consistency if using Path objects for savepath
 from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
+import plotly.graph_objects as go
 import polars as pl
-import seaborn as sns  # NOTE: testing style
 import torch
+from matplotlib.figure import Figure
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from rich.progress import track
 from scipy.stats import chi2 as chi2_dist
@@ -24,14 +25,34 @@ from holo.util.output import validate_bins
 # matplotlib.use("QtAgg")
 
 
-def _save_show_plot(in_fig, save_path: str, show: bool, title: str):
-    """Helper for repeated save or show functionality."""
-    in_fig.savefig(save_path, dpi=300)
-    logger.info(f"{title} plot saved to, {Path(save_path)}")
-    if show:
-        plt.show()
+def _save_show_plot(in_fig: Figure | go.Figure, save_path: str, show: bool, title: str | None):
+    """Help for repeated save or show functionality."""
+    if title is None:
+        title = "unset_title"
+    if type(in_fig) is Figure:
+        in_fig.savefig(save_path, dpi=300)
+        logger.info(f"{title} plot saved to, {Path(save_path)}")
+        if show:
+            plt.show()  # type: ignore
+        else:
+            plt.close(in_fig)
     else:
-        plt.close(in_fig)
+        logger.info("attempting to save alternative format...")
+        try:
+            in_fig.write_image(save_path, width=800, height=500)  # Specify dimensions if needed
+            print(f"Plotly figure saved to {save_path}")
+            logger.info(f"{title} plot saved to, {Path(save_path)}")
+        except ValueError:
+            try:
+                html_savepath = str(Path(save_path).with_suffix(".html"))
+                in_fig.write_html(html_savepath)
+                print(
+                    f"Plotly figure could not be saved as image \
+                    (Kaleido not installed). Saved as HTML to {html_savepath}"
+                )
+                logger.info(f"{title} plot saved to, {html_savepath}")
+            except Exception as e_html:
+                print(f"Failed to save Plotly figure as HTML: {e_html}")
 
 
 def gather_z_preds(
@@ -257,42 +278,81 @@ def plot_actual_versus_predicted(
     # NOTE: must create legend after all plots have been created
     ax.legend(loc="upper left")  # type: ignore
     plt.tight_layout()
-    _save_show_plot(fig, savepath, show, title)
+    _save_show_plot(fig, fname, save_fig, title)
 
 
 def plot_residual_vs_true(
     z_pred_m: npt.NDArray[np.float64],
     z_true_m: npt.NDArray[np.float64],
-    title: str = "Residual vs True depth",
-    savepath: str = "phase_amp.png",
+    title: str = "Residual vs True depth (Plotly)",
+    savepath: str = "residual_plotly.png",
     show: bool = False,
 ):
+    """Plots residual vs true depth using Plotly."""
     res_m = z_pred_m - z_true_m
     n_bins = max(10, len(z_true_m) // 50)
-    bins_m = np.linspace(z_true_m.min(), z_true_m.max(), n_bins, dtype=np.float32)
+    # Ensure bins_m has at least 2 elements for np.linspace and subsequent logic
+    bins_m_np = np.linspace(z_true_m.min(), z_true_m.max(), n_bins, dtype=np.float32)
 
-    fig, ax = plt.subplots(figsize=(6, 3.5))
-    ax.scatter(z_true_m, res_m, s=10, alpha=0.3)
-
-    # running mean & ±σ
-    bin_idx = np.digitize(z_true_m, bins_m)
-    mu, sd, xc = [], [], []
-    for i in track(range(1, len(bins_m)), description="bin checking..."):
+    # Calculate running mean & ±σ
+    bin_idx = np.digitize(z_true_m, bins_m_np)
+    mu_list: list[np.float32] = []
+    sd_list: list[np.float32] = []
+    xc_list: list[np.float32] = []
+    # The loop should go up to len(bins_m_np) to cover all bins defined by linspace.
+    # np.digitize with n_bins points creates n_bins-1 intervals.
+    # Iterating from 1 to len(bins_m_np) (or n_bins) means checking indices 1 to n_bins-1 based on digitize's output.
+    for i in track(range(1, len(bins_m_np)), description="Bin checking (Plotly)..."):
         mask = bin_idx == i
         if mask.any():  # at least one sample in the bin
-            mu.append(res_m[mask].mean())
-            sd.append(res_m[mask].std())
-            xc.append(0.5 * (bins_m[i] + bins_m[i - 1]))
+            mu_list.append(res_m[mask].mean())
+            sd_list.append(res_m[mask].std())
+            xc_list.append(0.5 * (bins_m_np[i] + bins_m_np[i - 1]))
 
-    ax.plot(xc, np.array(mu), c="C0", lw=1, label="mean")
-    ax.fill_between(xc, (np.array(mu) - sd), (np.array(mu) + sd), alpha=0.15, color="C0", label="±1 σ")
+    mu_np = np.array(mu_list, dtype=np.float64)
+    sd_np = np.array(sd_list, dtype=np.float32)
+    xc_np = np.array(xc_list, dtype=np.float32)
 
-    ax.axhline(0, ls="--", c="k", lw=0.8)
-    ax.set_xlabel("True focus depth (µm)")
-    ax.set_ylabel("Residual (pred–true) (µm)")
-    ax.legend(loc="upper right")
-    ax.set_title(title)
-    plt.tight_layout()
+    sig_x = (np.concatenate([xc_np, xc_np[::-1]]),)
+    sig_y = (np.concatenate([mu_np + sd_np, (mu_np - sd_np)[::-1]], dtype=np.float64),)
+
+    fig: go.Figure = go.Figure()
+
+    # Scatter plot of residuals
+    fig.add_trace(
+        go.Scatter(
+            x=z_true_m, y=res_m, mode="markers", marker=dict(size=6, opacity=0.3, color="grey"), name="Residuals"
+        )
+    )
+
+    # Running mean line
+    if len(xc_np) > 0:  # only plot if there's data
+        fig.add_trace(go.Scatter(x=xc_np, y=mu_np, mode="lines", line=dict(color="blue", width=2), name="Mean"))
+
+        # ±1 sigma band
+        fig.add_trace(
+            go.Scatter(
+                x=sig_x,
+                y=sig_y,
+                fill="toself",
+                fillcolor="rgba(0,0,255,0.15)",
+                line=dict(color="rgba(255,255,255,0)"),
+                hoverinfo="skip",
+                name="±1 σ",
+            )
+        )
+
+    # Horizontal line at y=0
+    fig.add_hline(y=0, line_dash="dash", line_color="black", line_width=1)
+
+    fig.update_layout(
+        title_text=title,
+        xaxis_title_text="True focus depth (µm)",
+        yaxis_title_text="Residual (pred–true) (µm)",
+        legend_title_text="Legend",
+        hovermode="closest",
+    )
+
     _save_show_plot(fig, savepath, show, title)
 
 
@@ -300,7 +360,7 @@ def plot_violin_depth_bins(
     z_pred_m: npt.NDArray[np.float64],
     z_true_m: npt.NDArray[np.float64],
     title: str = "Signed error distribution per depth slice",
-    savepath: str = "phase_amp.png",
+    savepath: str = "depth_bins.png",
     show: bool = False,
 ):
     # sanity
@@ -310,33 +370,28 @@ def plot_violin_depth_bins(
 
     # choose depth bins so each violin has ~50 points
     n_bins = max(10, len(depth_um) // 50)  # tweak divisor as desired
-    bins = np.linspace(depth_um.min(), depth_um.max(), n_bins + 1)
+    bins = np.linspace(depth_um.min(), depth_um.max(), n_bins + 1, dtype=np.float64)
     bin_idx = np.digitize(depth_um, bins) - 1  # → 0 … n_bins-1
-    bin_cent = 0.5 * (bins[:-1] + bins[1:])  # for labels
+    # bin_cent = 0.5 * (bins[:-1] + bins[1:])  # for labels
 
     df = pl.DataFrame(
         {
             "bin": bin_idx,
             "err_um": err_um,
         }
-    )  # seaborn can plot from polars
+    )
 
-    fig, ax = plt.subplots(figsize=(8, 3))
-    sns.violinplot(data=df, x="bin", y="err_um", inner="quartile", cut=0, bw="scott", ax=ax, width=0.9, color="0.4")
+    fig = go.Figure(go.Violin(y=df["err_um"], x=df["bin"], width=0.9))
 
-    ax.axhline(0, ls="--", c="k", lw=0.8)
-    ax.set_ylabel("Pred − true (µm)")
-    ax.set_xlabel("True depth bin (µm)")
+    fig.update_layout(
+        yaxis_zeroline=True,
+        title_text=title,
+        xaxis_title_text="True focus depth (µm)",
+        yaxis_title_text="(pred true) (µm)",
+        legend_title_text="Legend",
+        hovermode="closest",
+    )
 
-    # thin the x-axis ticks to ~8 labels
-    step = max(1, n_bins // 8)
-    tick_pos = np.arange(0, n_bins, step)
-    tick_label = [f"{bin_cent[i]:.4f}" for i in tick_pos]
-
-    ax.set_xticks(tick_pos, tick_label, rotation=40, ha="right")
-    ax.set_title(title)
-
-    fig.tight_layout()
     _save_show_plot(fig, savepath, show, title)
 
 
