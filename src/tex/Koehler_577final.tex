@@ -17,6 +17,16 @@
 \usepackage{listings}                 % source‑code blocks
 \usepackage{csquotes}                 % recommended for biblatex
 
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\package}[1]{\textsc{#1}}
+
+% Bibliography --------------------------------------------------------
+
+\usepackage{csquotes}
+
+% Clever‑Refs ---------------------------------------------------------
+\usepackage[capitalize]{cleveref}
+
 % ------------------------------------------------------------
 %                 Document meta‑data
 % ------------------------------------------------------------
@@ -56,7 +66,7 @@
   implementation in my work here is done primarily with Python, and PyTorch 2. This code
   lives in the \texttt{src/holo} package hierarchy. The primary contributions of this
   code are a series of self-maintaining checks on the provided dataset, a configurable
-  training script accessed via the CLI package \texttt{Typer}, which provides a rich set
+  training script accessed via the CLI package \package{Typer}, which provides a rich set
   of diagnostic plots (MAE, residuals, violins, hex‑bins).
 \end{abstract}
 
@@ -73,7 +83,7 @@ than what the human eye itself was capable of, but we still had enormous issues 
 surmount. There was the issue of how exactly to compound the lens as to increase
 magnification, how to limit the aberration hitting a lens, and how to effectively
 illuminate that which is so small even capturing light from from the specimen can be a
-struggle \autoref{microscope_com}.
+struggle \cite{microscope_history}.
 
 With the advent of modern computing came the necessity to digitize all forms of
 information that was only in the physical world, one important subject was that of images
@@ -87,18 +97,24 @@ effectively gain more information that would otherwise never be had. Manual sear
 such a depth is extremely tedious as the process involves the collection of numerous
 intensities at various depths, from which only one ought to give the greatest amount of
 information, and the difference from it's neighbors would be miniscule
-\autoref{Convolutional Neural Network (CNN) vs Vision Transformer (ViT) for Digital Holography}.
+\cite{li2024focusnet}.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.48\textwidth]{figures/screen.png}
+  \caption{Residual error as a function of true depth.}
+  \label{fig:laser_setup}
+\end{figure}
 
 Where even complex and robust algorithms fail, there is an opening for neural networks to
 attempt to fill in. In the past quarter of this century, we have seen artificial
 intelligence go from a mostly philosophical question, to a real application with broad
-use cases, such as imaging \autoref{quartz}. A revelation took place with the successful
+use cases, such as imaging \cite{imagenet_dataset_qz}. A revelation took place with the successful
 results from ImageNet classification in 2017, where researchers had successfully employed
 a CNN to correctly classify millions of images based on what the subject of the image was
-\autoref{ImageNet}. These models have been "increasingly applied in the digital
+\cite{krizhevsky2012imagenet}. These models have been "increasingly applied in the digital
 post-processing of optical signals" effectively serving as both the foundation and
-inspiration for this work \autoref{TorchOptics: An open-source Python library for
-differentiable Fourier optics simulations}.
+inspiration for this work \cite{torchoptics2021}.
 
 The idea that classification of enormous amounts of complicated visual data could be done
 by anything other a human working with sophisticated and tailor made computer vision
@@ -138,8 +154,7 @@ the network down an incorrect path.
 
 When training a model there are some high level attributes to tune, such as the
 percentage split between testing and validation. I go with a default of $80-20$, with the
-majority going toward training, which is a standard split \autoref{Convolutional Neural
-Network (CNN) vs Vision Transformer (ViT) for Digital Holography}.
+majority going toward training, which is a standard split \cite{li2024focusnet}.
 
 \subsection{Network architecture}
 The backbone is I implement is primarily \textbf{EfficientNet‑B4} (\cite{tan2019efficientnet})
@@ -207,7 +222,7 @@ epoch. While the optimizer AdamW is a gradient descent algorithm that adjusts th
 learning rate to better fit the stream of information. It does so by taking the mean and
 variance, and then applying a bias correction to these values, before updating the
 weights utilizing this new estimate
-\autoref{https://www.geeksforgeeks.org/adam-optimizer/}. This is used in conjunction with
+\cite{geeksforgeeks_adam}. This is used in conjunction with
 a scheduler, \texttt{ReduceLROnPlateau}, which lowers the learning rate by a factor of 10
 if validation MAE stalls for five epochs. These three form the guardrails that guide the
 regression model to a better result. All experiments use the seed 42 to ensure
@@ -305,7 +320,7 @@ to soften any conclusions beyond what has already been analyzed.
 
 For an absolute measure of quality, one common and relatively simple metric is the peak
 signal to noise ratio
-\ref{https://www.researchgate.net/publication/303517356_Comparison_of_image_quality_assessment_PSNR_HVS_SSIM_UIQI}.
+\cite{wang2004psnrhvs_ssim_uiqi}.
 This essentially measures the total magnitude of output pixels, compared to what the
 maximum could have been. Which gives you a measure of how much information you recovered
 relative to the total information available to you.
@@ -366,7 +381,19 @@ dataset \ref{fig:classificaton}.
   \caption{Residual error as a function of true depth.}
   \label{fig:classificaton}
 \end{figure}
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.48\textwidth]{figures/hexbin_train.png}
+  \caption{Residual error as a function of true depth.}
+  \label{fig:hex_test}
+\end{figure}
 
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.48\textwidth]{figures/hexbin_val.png}
+  \caption{Residual error as a function of true depth.}
+  \label{fig:hex_val}
+\end{figure}
 % ------------------------------------------------------------
 \section{Conclusion and future work}
 
@@ -397,6 +424,7 @@ symbiotic way.
 % ------------------------------------------------------------
 
 % ------------------------------------------------------------
+\newpage
 \appendix
 \section{Key training command}
 \begin{lstlisting}[style=python]
@@ -407,22 +435,6 @@ uv run --scripts main.py train&#x20;
 
 \section{Additional figures}
 % add extra plots if necessary
-
-\begin{figure}[ht]
-  \centering
-  \includegraphics[width=0.48\textwidth]{figures/hexbin_train.png}
-  \caption{Residual error as a function of true depth.}
-  \label{fig:hex_test}
-\end{figure}
-
-\begin{figure}[ht]
-  \centering
-  \includegraphics[width=0.48\textwidth]{figures/hexbin_val.png}
-  \caption{Residual error as a function of true depth.}
-  \label{fig:hex_val}
-\end{figure}
-
-\end{document}
 
 \begin{center}
   \vspace*{0.5em}
