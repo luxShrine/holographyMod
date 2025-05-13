@@ -1,7 +1,12 @@
+[build-system] # backend 
+build-backend = "setuptools.build_meta"
+
+requires = [ "setuptools>=68", "wheel" ]
+
 [project]
 name = "holographymod"
 version = "0.1.0"
-description = "Add your description here"
+description = "CLI for hologram autofocus training / evaluation"
 readme = "README.md"
 requires-python = ">=3.12"
 classifiers = [
@@ -10,7 +15,7 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-  "altair>=5.5.0",
+  "altair>=5.5",
   "dash>=3.0.4",
   "matplotlib>=3.10.1",
   "numpy>=2.2.4",
@@ -27,6 +32,7 @@ dependencies = [
   "torchvision>=0.21",
   "typer>=0.15.2",
 ]
+scripts.holo = "holographyMod.scripts.main:app" # path.to.module:callable
 
 [tool.ruff]
 target-version = "py312"
