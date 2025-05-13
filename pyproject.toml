@@ -1,10 +1,10 @@
-[build-system] # backend 
+[build-system]
 build-backend = "setuptools.build_meta"
 
 requires = [ "setuptools>=68", "wheel" ]
 
 [project]
-name = "holographymod"
+name = "holo"
 version = "0.1.0"
 description = "CLI for hologram autofocus training / evaluation"
 readme = "README.md"
@@ -15,7 +15,7 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-  "altair>=5.5",
+  "click>=8.1,<8.2",
   "dash>=3.0.4",
   "matplotlib>=3.10.1",
   "numpy>=2.2.4",
@@ -30,14 +30,21 @@ dependencies = [
   "torch>=2.6",
   "torchoptics>=0.3.1",
   "torchvision>=0.21",
-  "typer>=0.15.2",
+  "typer>=0.15.3",
 ]
-scripts.holo = "holographyMod.scripts.main:app" # path.to.module:callable
+
+scripts.holo = "holo.cli:app" # new path
+
+[tool.setuptools]
+package-dir = { "" = "src" } # ← tell it “everything lives in src/”
+
+[tool.setuptools.packages.find] # optional but explicit
+where = [ "src" ]
 
 [tool.ruff]
 target-version = "py312"
 line-length = 120
-src = [ "scripts", "src", "tests" ]
+src = [ "src", "tests" ]
 exclude = [ ".venv", "src/data", "src/static" ]
 respect-gitignore = true
 unsafe-fixes = true

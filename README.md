@@ -1,4 +1,4 @@
-# CLI
+# holographyMod
 
 Hologram autofocus trainer / evaluator
 

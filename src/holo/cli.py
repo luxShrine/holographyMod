@@ -1,8 +1,9 @@
-#!/usr/bin/env -S uv run --script
 from holo.util import log as log_setup  #   runs log.py# noqa: I001
 from holo.util.log import logger  # noqa: I001
 from pathlib import Path
 
+
+#!/usr/bin/env -S uv run --script
 import numpy as np
 import typer
 from PIL import Image
