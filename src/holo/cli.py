@@ -1,7 +1,4 @@
-from holo.util import log as log_setup  #   runs log.py# noqa: I001
-from holo.util.log import logger  # noqa: I001
 from pathlib import Path
-
 
 #!/usr/bin/env -S uv run --script
 import numpy as np
@@ -9,13 +6,11 @@ import typer
 from PIL import Image
 from PIL.Image import Image as ImageType
 
-import holo.analysis.metrics as met
-import holo.optics.reconstruction as rec
 import holo.util.paths as paths
 import holo.util.saveLoad as sl
-from holo.train.auto_caller import train_autofocus_refactored
-from holo.train.auto_classes import AutoConfig
+from holo.util import log as log_setup
 from holo.util.crop import crop_max_square
+from holo.util.log import logger
 from holo.util.log import set_verbosity
 from holo.util.metadata import build_metadata_csv
 from holo.util.normalize import norm
@@ -55,6 +50,8 @@ def train(
     analysis: bool = typer.Option(False, "--classfiication", "-c", help="Change analysis type to classification"),
 ) -> None:
     """Train the autofocus model based on supplied dataset."""
+    from holo.train.auto_caller import train_autofocus_refactored
+    from holo.train.auto_classes import AutoConfig
     # NOTE: quick test settings
     # batch = 8
     # crop = 256
@@ -106,8 +103,11 @@ def train(
 @app.command()
 def plot_train(
     analysis: bool = typer.Option(False, "--classfiication", "-c", help="Change analysis type to classification"),
+    show: bool = typer.Option(True, "--s", help="Save the output plots, or display them."),
 ):
     """Plot the data saved from autofocus training."""
+    import holo.analysis.metrics as met  # performance reasons, import locally in function
+
     plot_info_list = sl.load_obj()
     plot_info = plot_info_list[0]  # unpack list of obj
     if analysis:
@@ -120,8 +120,7 @@ def plot_train(
             np.array(plot_info.zerr_train),
             np.array(plot_info.zerr_test),
             plot_info.title,
-            # plot_info.save_fig,
-            True,
+            show,
             str(plot_info.fname),
         )
     else:
@@ -130,12 +129,14 @@ def plot_train(
             np.array(plot_info.z_train_pred),
             title="Residual vs True depth (train)",
             savepath="residual_vs_true_train.png",
+            show=show,
         )
         met.plot_residual_vs_true(
             np.array(plot_info.z_test),
             np.array(plot_info.z_test_pred),
             title="Residual vs True depth (val)",
             savepath="residual_vs_true_val.png",
+            show=show,
         )
 
         met.plot_violin_depth_bins(
@@ -143,12 +144,14 @@ def plot_train(
             np.array(plot_info.z_train_pred),
             title="Signed error distribution per depth slice (train)",
             savepath="error_violin_train.png",
+            show=show,
         )
         met.plot_violin_depth_bins(
             np.array(plot_info.z_test),
             np.array(plot_info.z_test_pred),
             title="Signed error distribution per depth slice (val)",
             savepath="error_violin_val.png",
+            show=show,
         )
 
         met.plot_hexbin_with_marginals(
@@ -156,12 +159,14 @@ def plot_train(
             np.array(plot_info.z_train_pred),
             title="Prediction density (train)",
             savepath="hexbin_train.png",
+            show=show,
         )
         met.plot_hexbin_with_marginals(
             np.array(plot_info.z_test),
             np.array(plot_info.z_test_pred),
             title="Prediction density (val)",
             savepath="hexbin_val.png",
+            show=show,
         )
 
 
@@ -182,6 +187,9 @@ def reconstruction(
     dx: float = typer.Argument(1e-6, help="Size of image px (m)"),
 ):
     """Perform reconstruction on an hologram."""
+    import holo.analysis.metrics as met  # performance reasons, import locally in function
+    import holo.optics.reconstruction as rec
+
     ckpt_file = Path("checkpoints") / model_path
     if not ckpt_file.exists():
         typer.secho(f" checkpoint not found at {ckpt_file}", fg="red")
