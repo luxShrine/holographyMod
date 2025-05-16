@@ -10,6 +10,8 @@ arxiv.tar.gz
 src/tex/figures/*
 
 # Miscellaneous
+src/*.egg-info
 __pycache__
 *.synctex.gz
 *.log
+*.json
