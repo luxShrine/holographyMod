@@ -14,6 +14,7 @@ from holo.util.log import logger
 from holo.util.log import set_verbosity
 from holo.util.metadata import build_metadata_csv
 from holo.util.normalize import norm
+from holo.util.paths import static_root
 
 app = typer.Typer(help="Hologram autofocus trainer / evaluator")
 
@@ -124,18 +125,19 @@ def plot_train(
             str(plot_info.fname),
         )
     else:
+        s_root = static_root().as_posix()
         met.plot_residual_vs_true(
             np.array(plot_info.z_train),
             np.array(plot_info.z_train_pred),
             title="Residual vs True depth (train)",
-            savepath="residual_vs_true_train.png",
+            savepath=(s_root / Path("residual_vs_true_train.png")).as_posix(),
             show=show,
         )
         met.plot_residual_vs_true(
             np.array(plot_info.z_test),
             np.array(plot_info.z_test_pred),
             title="Residual vs True depth (val)",
-            savepath="residual_vs_true_val.png",
+            savepath=(s_root / Path("residual_vs_true_val.png")).as_posix(),
             show=show,
         )
 
@@ -143,14 +145,14 @@ def plot_train(
             np.array(plot_info.z_train),
             np.array(plot_info.z_train_pred),
             title="Signed error distribution per depth slice (train)",
-            savepath="error_violin_train.png",
+            savepath=(s_root / Path("error_violin_train.png")).as_posix(),
             show=show,
         )
         met.plot_violin_depth_bins(
             np.array(plot_info.z_test),
             np.array(plot_info.z_test_pred),
             title="Signed error distribution per depth slice (val)",
-            savepath="error_violin_val.png",
+            savepath=(s_root / Path("error_violin_val.png")).as_posix(),
             show=show,
         )
 
@@ -158,14 +160,14 @@ def plot_train(
             np.array(plot_info.z_train),
             np.array(plot_info.z_train_pred),
             title="Prediction density (train)",
-            savepath="hexbin_train.png",
+            savepath=(s_root / Path("hexbin_train.png")).as_posix(),
             show=show,
         )
         met.plot_hexbin_with_marginals(
             np.array(plot_info.z_test),
             np.array(plot_info.z_test_pred),
             title="Prediction density (val)",
-            savepath="hexbin_val.png",
+            savepath=(s_root / Path("hexbin_val.png")).as_posix(),
             show=show,
         )
 
