@@ -1,15 +1,18 @@
-import warnings
+from __future__ import annotations
+
 from pathlib import Path  # For consistency if using Path objects for savepath
 from typing import Any
+from typing import Literal
+from typing import cast
 
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
+import plotly.express as px
 import plotly.graph_objects as go
 import polars as pl
 import torch
 from matplotlib.figure import Figure
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 from rich.progress import track
 from scipy.stats import chi2 as chi2_dist
 from torch import Tensor
@@ -20,47 +23,52 @@ from holo.data.dataset import HologramFocusDataset
 from holo.util.log import logger
 from holo.util.output import validate_bins
 
-# WARN: backend setting, should be temporary fix
-# import matplotlib
-# matplotlib.use("QtAgg")
+# limit the accepted strings
+type AnalysisKind = Literal["reg", "cls"]
 
 
 def _save_show_plot(in_fig: Figure | go.Figure, save_path: str, show: bool, title: str | None):
     """Help for repeated save or show functionality."""
     if title is None:
         title = "unset_title"
-    if type(in_fig) is Figure:
+    if type(in_fig) is Figure:  # matplotlib
         in_fig.savefig(save_path, dpi=300)
         logger.info(f"{title} plot saved to, {Path(save_path)}")
         if show:
+            logger.info("Displaying plot...")
             plt.show()  # type: ignore
         else:
             plt.close(in_fig)
-    else:
+    elif type(in_fig) is go.Figure:  # plotly
+        if show:
+            logger.info("Displaying plot...")
+            in_fig.show()  # type: ignore
         logger.info("attempting to save alternative format...")
         try:
-            in_fig.write_image(save_path, width=800, height=500)  # Specify dimensions if needed
-            print(f"Plotly figure saved to {save_path}")
+            save_p = Path(save_path)
+            _ = in_fig.write_image(save_p, width=800, height=500)  # Specify dimensions if needed
             logger.info(f"{title} plot saved to, {Path(save_path)}")
         except ValueError:
             try:
-                html_savepath = str(Path(save_path).with_suffix(".html"))
-                in_fig.write_html(html_savepath)
-                print(
-                    f"Plotly figure could not be saved as image \
-                    (Kaleido not installed). Saved as HTML to {html_savepath}"
+                html_savepath = Path(save_path).with_suffix(".html")
+                _ = in_fig.write_html(html_savepath)
+                logger.warning(
+                    "Plotly figure could not be saved as image",
+                    f"(Kaleido not installed). Saved as HTML to {html_savepath}",
                 )
                 logger.info(f"{title} plot saved to, {html_savepath}")
             except Exception as e_html:
-                print(f"Failed to save Plotly figure as HTML: {e_html}")
+                logger.warning(f"Failed to save Plotly figure as HTML: {e_html}")
+    else:
+        logger.error("Unkown plot type passed to save plot function.")
 
 
 def gather_z_preds(
     model: Module,
-    analysis: str,
+    analysis: AnalysisKind,
     loader: DataLoader[tuple[Tensor, Tensor]],
     dataset: HologramFocusDataset,
-    device: str,
+    device: torch.device | str,
 ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]:
     """Combine model predictions info format appropriate for comparison.
 
@@ -75,8 +83,12 @@ def gather_z_preds(
         tuple[NDArray, NDArray]: The z-value predictions and truth values.
 
     """
-    model.eval()  # set model into evaluation rather than training mode
-    z_preds, z_true = np.array([]), np.array([])
+    _: Module = model.eval()  # set model into evaluation rather than training mode
+    z_pred_chunks: list[npt.NDArray[np.float64]] = []
+    z_true_chunks: list[npt.NDArray[np.float64]] = []
+    x: Tensor
+    y: Tensor
+    out: Tensor
 
     with torch.no_grad():
         for x, y in loader:  # y is class index
@@ -88,8 +100,8 @@ def gather_z_preds(
 
             # convert z to um from object parameters
             if analysis == "reg":  # float outputs are depth in meters
-                z_pred = (out.squeeze(1) * dataset.z_sigma + dataset.z_mu).cpu().numpy()
-                z_tgt = (y * dataset.z_sigma + dataset.z_mu).cpu().numpy()
+                z_pred = cast(npt.NDArray[np.float64], (out.squeeze(1) * dataset.z_sigma + dataset.z_mu).cpu().numpy())
+                z_tgt = cast(npt.NDArray[np.float64], (y * dataset.z_sigma + dataset.z_mu).cpu().numpy())
             else:  # class -> bin index
                 # pick the form that matches network
                 if out.ndim == 2:
@@ -100,13 +112,16 @@ def gather_z_preds(
                     cls_pred = out.squeeze().cpu().long()
                     cls_pred = out.argmax(1).cpu()
 
-                z_pred = dataset.bin_centers_m[cls_pred.numpy()]
-                z_tgt = dataset.bin_centers_m[y.cpu().numpy()]
+                cls_pred_num: npt.NDArray[np.int32] = cast(npt.NDArray[np.int32], (cls_pred.numpy()))
+                z_pred: npt.NDArray[np.float64] = dataset.bin_centers_m[cls_pred_num]
+                z_tgt: npt.NDArray[np.float64] = dataset.bin_centers_m[y.cpu().numpy()]
 
             # store each of these values
-            z_preds = np.append(z_preds, z_pred)
-            z_true = np.append(z_true, z_tgt)
+            z_pred_chunks.append(z_pred)
+            z_true_chunks.append(z_tgt)
 
+    z_preds = np.concatenate(z_pred_chunks, dtype=np.float32)
+    z_true = np.concatenate(z_true_chunks, dtype=np.float32)
     return np.asarray(z_preds, dtype=np.float32).ravel(), np.asarray(z_true, dtype=np.float32).ravel()
 
 
@@ -210,9 +225,9 @@ def plot_actual_versus_predicted(
     # calculate nrmse, ignore the psnr for this
     nrmse, psnr = error_metric(z_test, z_test_pred, 1)
     if np.isinf(psnr):
-        print("PSNR infinite (zero MSE)")
+        logger.info("PSNR infinite (zero MSE)")
     else:
-        print(rf"Validation NRMSE : {nrmse:7.2f} µm  PSNR: {psnr}")
+        logger.info(rf"Validation NRMSE : {nrmse:7.2f} µm  PSNR: {psnr}")
 
     # uncertainty ribbon, better than having tons of error bars
     if yerr_train is None or yerr_test is None:
@@ -241,8 +256,8 @@ def plot_actual_versus_predicted(
         # p value to measure if my data significantly deviates from expected
         p_val = 1.0 - chi2_dist.cdf(chi2, dof)  # type: ignore
 
-        print(f"chi^2 / dof = {chi2:.1f} / {dof} -> chi^2_red = {chi2_red:.2f}")
-        print(f"p-value  = {p_val:.3f}")
+        logger.info(f"chi^2 / dof = {chi2:.1f} / {dof} -> chi^2_red = {chi2_red:.2f}")
+        logger.info(f"p-value  = {p_val:.3f}")
 
         # plot the mean value of the z_train predictions, with a band representing the error of the bins
         ax.plot(x_train_np, mu_train_np, color="C0", lw=2, label="Train mean", zorder=4)  # type: ignore
@@ -272,8 +287,8 @@ def plot_actual_versus_predicted(
         hits = np.abs(z_test_pred[sig_cond] - z_test[sig_cond]) < q * sigma_val[sig_cond]
         hit_rate = hits.mean() * 100  # return as a percentage
 
-        print(f"Validation MAE  : {np.abs(z_test_pred - z_test).mean():7.2f} µm")
-        print(rf"% inside +-{q} sigma ribbon (val): {hit_rate:5.1f}%")
+        logger.info(f"Validation MAE  : {np.abs(z_test_pred - z_test).mean():7.2f} µm")
+        logger.info(rf"% inside +-{q} sigma ribbon (val): {hit_rate:5.1f}%")
 
     # NOTE: must create legend after all plots have been created
     ax.legend(loc="upper left")  # type: ignore
@@ -288,7 +303,7 @@ def plot_residual_vs_true(
     savepath: str = "residual_plotly.png",
     show: bool = False,
 ):
-    """Plots residual vs true depth using Plotly."""
+    """Plot residual vs true depth using Plotly."""
     res_m = z_pred_m - z_true_m
     n_bins = max(10, len(z_true_m) // 50)
     # Ensure bins_m has at least 2 elements for np.linspace and subsequent logic
@@ -313,13 +328,13 @@ def plot_residual_vs_true(
     sd_np = np.array(sd_list, dtype=np.float32)
     xc_np = np.array(xc_list, dtype=np.float32)
 
-    sig_x = (np.concatenate([xc_np, xc_np[::-1]]),)
-    sig_y = (np.concatenate([mu_np + sd_np, (mu_np - sd_np)[::-1]], dtype=np.float64),)
+    sig_x = np.concatenate([xc_np, xc_np[::-1]])
+    sig_y = np.concatenate([mu_np + sd_np, (mu_np - sd_np)[::-1]], dtype=np.float64)
 
     fig: go.Figure = go.Figure()
 
     # Scatter plot of residuals
-    fig.add_trace(
+    _ = fig.add_trace(
         go.Scatter(
             x=z_true_m, y=res_m, mode="markers", marker=dict(size=6, opacity=0.3, color="grey"), name="Residuals"
         )
@@ -327,10 +342,10 @@ def plot_residual_vs_true(
 
     # Running mean line
     if len(xc_np) > 0:  # only plot if there's data
-        fig.add_trace(go.Scatter(x=xc_np, y=mu_np, mode="lines", line=dict(color="blue", width=2), name="Mean"))
+        _ = fig.add_trace(go.Scatter(x=xc_np, y=mu_np, mode="lines", line=dict(color="blue", width=2), name="Mean"))
 
         # ±1 sigma band
-        fig.add_trace(
+        _ = fig.add_trace(
             go.Scatter(
                 x=sig_x,
                 y=sig_y,
@@ -343,9 +358,9 @@ def plot_residual_vs_true(
         )
 
     # Horizontal line at y=0
-    fig.add_hline(y=0, line_dash="dash", line_color="black", line_width=1)
+    _ = fig.add_hline(y=0, line_dash="dash", line_color="black", line_width=1)
 
-    fig.update_layout(
+    _ = fig.update_layout(
         title_text=title,
         xaxis_title_text="True focus depth (µm)",
         yaxis_title_text="Residual (pred–true) (µm)",
@@ -395,6 +410,48 @@ def plot_violin_depth_bins(
     _save_show_plot(fig, savepath, show, title)
 
 
+# def plot_hexbin_with_marginals(
+#     z_pred_m: npt.NDArray[np.float64],
+#     z_true_m: npt.NDArray[np.float64],
+#     title: str = "Prediction density (val)",
+#     savepath: str = "phase_amp.png",
+#     show: bool = False,
+# ):
+#     # figure & main hexbin
+#     fig, ax = plt.subplots(figsize=(5, 5))
+#
+#     hb = ax.hexbin(
+#         z_true_um, z_pred_um, gridsize=grids, cmap="inferno", bins="log" if z_true_m.size > 1000 else None, mincnt=1
+#     )
+#
+#     rng = [min(z_true_um.min(), z_pred_um.min()), max(z_true_um.max(), z_pred_um.max())]
+#     ax.plot(rng, rng, ls="--", c="grey", lw=0.8)
+#     ax.set_xlim(rng)
+#     ax.set_ylim(rng)
+#
+#     ax.set_xlabel("True depth (µm)")
+#     ax.set_ylabel("Predicted depth (µm)")
+#     ax.set_title(title)
+#
+#     if z_true_m.size > 1000:
+#         fig.colorbar(hb, ax=ax, label=r"$\log_{10}(\mathrm{count})$")
+#     else:
+#         fig.colorbar(hb, ax=ax, label=r"$(\mathrm{count})$")
+#
+#     # marginal
+#     div = make_axes_locatable(ax)
+#     ax_top = div.append_axes("top", 1.0, pad=0.1, sharex=ax)
+#     ax_right = div.append_axes("right", 1.0, pad=0.1, sharey=ax)
+#
+#     ax_top.hist(z_true_um, bins=60, color="grey", alpha=0.6)
+#     ax_right.hist(z_pred_um, bins=60, orientation="horizontal", color="grey", alpha=0.6)
+#     ax_top.axis("off")
+#     ax_right.axis("off")
+#
+#     fig.tight_layout()
+#     _save_show_plot(fig, savepath, show, title)
+
+
 def plot_hexbin_with_marginals(
     z_pred_m: npt.NDArray[np.float64],
     z_true_m: npt.NDArray[np.float64],
@@ -402,50 +459,25 @@ def plot_hexbin_with_marginals(
     savepath: str = "phase_amp.png",
     show: bool = False,
 ):
+    """Plot density of predictions of z."""
     # data
     mask = np.isfinite(z_true_m) & np.isfinite(z_pred_m)
     z_true_m, z_pred_m = z_true_m[mask], z_pred_m[mask]
 
     if z_true_m.size == 0:
-        warnings.warn("plot_hexbin: no finite points after filtering", stacklevel=2)
+        logger.warning("plot_hexbin: no finite points after filtering")
         return
 
     z_true_um, z_pred_um = z_true_m * 1e6, z_pred_m * 1e6
 
     # figure & main hexbin
-    fig, ax = plt.subplots(figsize=(5, 5))
-    hex_px = 8
-    grids = max(20, int(fig.get_size_inches()[0] * fig.dpi / hex_px))
-
-    hb = ax.hexbin(
-        z_true_um, z_pred_um, gridsize=grids, cmap="inferno", bins="log" if z_true_m.size > 1000 else None, mincnt=1
+    df = pl.DataFrame(
+        {
+            "z true": z_true_um,
+            "z pred": z_pred_um,
+        }
     )
-
-    rng = [min(z_true_um.min(), z_pred_um.min()), max(z_true_um.max(), z_pred_um.max())]
-    ax.plot(rng, rng, ls="--", c="grey", lw=0.8)
-    ax.set_xlim(rng)
-    ax.set_ylim(rng)
-
-    ax.set_xlabel("True depth (µm)")
-    ax.set_ylabel("Predicted depth (µm)")
-    ax.set_title(title)
-
-    if z_true_m.size > 1000:
-        fig.colorbar(hb, ax=ax, label=r"$\log_{10}(\mathrm{count})$")
-    else:
-        fig.colorbar(hb, ax=ax, label=r"$(\mathrm{count})$")
-
-    # marginal
-    div = make_axes_locatable(ax)
-    ax_top = div.append_axes("top", 1.0, pad=0.1, sharex=ax)
-    ax_right = div.append_axes("right", 1.0, pad=0.1, sharey=ax)
-
-    ax_top.hist(z_true_um, bins=60, color="grey", alpha=0.6)
-    ax_right.hist(z_pred_um, bins=60, orientation="horizontal", color="grey", alpha=0.6)
-    ax_top.axis("off")
-    ax_right.axis("off")
-
-    fig.tight_layout()
+    fig = px.density_heatmap(df, x="z true", y="z pred", marginal_x="histogram")
     _save_show_plot(fig, savepath, show, title)
 
 
@@ -469,10 +501,10 @@ def plot_amp_phase(
             When they are None the function hides GT / error panels.
 
     """
-    has_gt = amp_true is not None and phase_true is not None
     title = "amp phase"
 
-    if has_gt:
+    # if ground truth is provided
+    if amp_true is not None and phase_true is not None:
         assert amp_true.shape == amp_recon.shape
         assert phase_true.shape == phase_recon.shape
 
