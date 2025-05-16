@@ -22,7 +22,6 @@ from torch.utils.data import DataLoader
 from holo.data.dataset import HologramFocusDataset
 from holo.util.log import logger
 from holo.util.output import validate_bins
-from holo.util.paths import static_root
 
 # limit the accepted strings
 type AnalysisKind = Literal["reg", "cls"]
