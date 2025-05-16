@@ -2,10 +2,28 @@
 
 Hologram autofocus trainer / evaluator
 
+**Installation**
+
+```console
+git clone https://github.com/luxShrine/holographyMod.git
+cd holographyMod
+uv run holo --help # using uv
+```
+
+Or not using uv:
+
+```console
+python3 -m venv .venv # using native python
+source .venv/bin/activate # bash
+.venv\bin\activate # powershell
+
+pip install -e . # install module to venv
+```
+
 **Usage**:
 
 ```console
-$ [OPTIONS] COMMAND [ARGS]...
+holo [OPTIONS] COMMAND [ARGS]...
 ```
 
 **Options**:
@@ -30,7 +48,7 @@ Train the autofocus model based on supplied dataset.
 **Usage**:
 
 ```console
-$ train [OPTIONS] DS_ROOT
+holo train [OPTIONS] DS_ROOT
 ```
 
 **Arguments**:
@@ -58,12 +76,13 @@ Plot the data saved from autofocus training.
 **Usage**:
 
 ```console
-$ plot-train [OPTIONS]
+holo plot-train [OPTIONS]
 ```
 
 **Options**:
 
 - `-c, --classfiication`: Change analysis type to classification
+- `--s`: Save the output plots, or display them. [default: True]
 - `--help`: Show this message and exit.
 
 ## `reconstruction`
@@ -73,7 +92,7 @@ Perform reconstruction on an hologram.
 **Usage**:
 
 ```console
-$ reconstruction [OPTIONS] [IMG_FILE_PATH] [MODEL_PATH] [BACKBONE] [CROP_SIZE] [WAVELENGTH] [Z] [DX]
+holo reconstruction [OPTIONS] [IMG_FILE_PATH] [MODEL_PATH] [BACKBONE] [CROP_SIZE] [WAVELENGTH] [Z] [DX]
 ```
 
 **Arguments**:
@@ -97,7 +116,7 @@ Build CSV containing metadata of images in hologram directory.
 **Usage**:
 
 ```console
-$ create-meta [OPTIONS] HOLOGRAM_DIRECTORY OUT_DIRECTORY
+holo create-meta [OPTIONS] HOLOGRAM_DIRECTORY OUT_DIRECTORY
 ```
 
 **Arguments**:
