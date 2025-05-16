@@ -64,14 +64,20 @@ isort.known-third-party = [ "matplotlib", "torch", "torchvision", "polars", "num
 
 [tool.basedpyright]
 pythonVersion = "3.12"
-typeCheckingMode = "strict"            # “basic” 
-venvPath = ".venv"
-venv = "."
-stubPath = "typings"
-exclude = [ "src/static", "src/data" ]
-extraPaths = [ "src" ]                 # 'import holo' will resolve
-reportMissingImports = true
+# typeCheckingMode = "strict"    # “basic” 
+# venvPath = ".venv"
+# venv = "."
+allowedUntypedLibraries = [
+  "matplotlib",
+  "mpl_toolkits",
+  # "plotly.graph_objects" 
+]
+# stubPath = "typings"
 reportMissingTypeStubs = false
-reportUnusedImport = "hint"
-reportPrivateUsage = "warning"
-reportGeneralTypeIssues = "warning"
+# exclude = [ "src/tex", "src/static", "src/data", "**/__pycache__" ]
+include = [ "src/holo" ]
+# extraPaths = [ "src" ] # 'import holo' will resolve
+reportExplicitAny = "none"
+# reportUnusedImport = "hint"
+# reportPrivateUsage = "warning"
+# reportGeneralTypeIssues = "warning"
