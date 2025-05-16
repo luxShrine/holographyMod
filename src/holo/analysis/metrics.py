@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path  # For consistency if using Path objects for savepath
 from typing import Any
 from typing import Literal
@@ -12,7 +10,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 import polars as pl
 import torch
+from matplotlib.axes import Axes
 from matplotlib.figure import Figure
+from matplotlib.image import AxesImage
 from rich.progress import track
 from scipy.stats import chi2 as chi2_dist
 from torch import Tensor
@@ -22,13 +22,16 @@ from torch.utils.data import DataLoader
 from holo.data.dataset import HologramFocusDataset
 from holo.util.log import logger
 from holo.util.output import validate_bins
+from holo.util.paths import static_root
 
 # limit the accepted strings
 type AnalysisKind = Literal["reg", "cls"]
 
 
-def _save_show_plot(in_fig: Figure | go.Figure, save_path: str, show: bool, title: str | None):
+def _save_show_plot(in_fig: Figure | go.Figure, show: bool, title: str | None, save_path: str = ""):
     """Help for repeated save or show functionality."""
+    if len(save_path) < 1:
+        save_path = static_root().as_posix()
     if title is None:
         title = "unset_title"
     if type(in_fig) is Figure:  # matplotlib
@@ -43,7 +46,7 @@ def _save_show_plot(in_fig: Figure | go.Figure, save_path: str, show: bool, titl
         if show:
             logger.info("Displaying plot...")
             in_fig.show()  # type: ignore
-        logger.info("attempting to save alternative format...")
+        logger.info("Saving plotly figure...")
         try:
             save_p = Path(save_path)
             _ = in_fig.write_image(save_p, width=800, height=500)  # Specify dimensions if needed
@@ -133,8 +136,8 @@ def _wrap_phase(p: npt.NDArray[np.float32]):
 def phase_metrics(org_phase: npt.NDArray[np.float32], recon_phase: npt.NDArray[np.float32]):
     """Calculate the mean average error and the phase cosine similarity."""
     diff = _wrap_phase(org_phase - recon_phase)
-    mae: float = np.abs(diff).mean()
-    cos_sim = np.mean(np.cos(diff), dtype=float)  # 1.0 → perfect match
+    mae: float = np.abs(diff).mean(dtype=float)
+    cos_sim = np.mean(np.cos(diff), dtype=float)  # 1.0 -> perfect match
     return {"MAE_phase": mae, "CosSim": cos_sim}
 
 
@@ -152,13 +155,13 @@ def error_metric(expected: npt.NDArray[np.float64], observed: npt.NDArray[np.flo
     """
     # Mean squared error (MSE) -> Peak Signal to noise ratio (PSNR)
     # MSE = 1/n \sum_{i=1}^{n} ( x_i - \hat{x}_{i} )^{2}
-    mse = np.mean((expected - observed) ** 2)
-    rmse = np.sqrt(mse)
+    mse = np.mean((expected - observed) ** 2, dtype=np.float64)
+    rmse = cast(np.float64, np.sqrt(mse))
     nrmse = rmse / np.mean(observed)
 
     # PSNR = 10 log( Max / MSE )
     # MAX = the maximum possible pixel value (255) for 8bit
-    psnr = 10 * np.log10((max_px**2) / mse)
+    psnr = cast(np.float64, 10 * np.log10((max_px**2) / mse))
     return nrmse, psnr
 
 
@@ -171,6 +174,7 @@ def plot_actual_versus_predicted(
     yerr_test: npt.NDArray[np.float64] | None = None,
     title: None | str = None,
     save_fig: bool = True,
+    # TODO:  change fname to path, fname really ought to be title?
     fname: str = "pred.png",
     figsize: tuple[int, int] = (8, 8),
 ) -> None:
@@ -199,27 +203,27 @@ def plot_actual_versus_predicted(
     conc = np.concatenate([z_test_pred, z_test, z_train_pred, z_train])  # combine all values into one array
     span = np.ptp(conc)  # returns range of values "peak to peak"
     # create the limits of the plot so it pads the plotted line
-    vmin: float = conc.min() - span / 4
-    vmax: float = conc.max() + span / 4
-    ax.set_xlim(vmin, vmax)
-    ax.set_ylim(vmin, vmax)
+    vmin: float = cast(float, conc.min() - span / 4)
+    vmax: float = cast(float, conc.max() + span / 4)
+    _ = ax.set_xlim(vmin, vmax)
+    _ = ax.set_ylim(vmin, vmax)
 
     # if my model was perfect it would match the known dataset values to the predicted values
     # create an ideal line to measure against
-    ax.plot([vmin, vmax], [vmin, vmax], "k--", lw=1.5, label="Ideal")  # type: ignore
+    _ = ax.plot([vmin, vmax], [vmin, vmax], "k--", lw=1.5, label="Ideal")  # type: ignore
 
     # plot the train dataset z_value predictions against the known values
-    ax.scatter(z_train, z_train_pred, s=6, c="C0", alpha=0.05, rasterized=True)  # type: ignore
+    _ = ax.scatter(z_train, z_train_pred, s=6, c="C0", alpha=0.05, rasterized=True)  # type: ignore
 
     # for the validation values, use a hexbin which shows the density of points in a given region of the plot
     hb = ax.hexbin(z_test, z_test_pred, gridsize=70, cmap="inferno", mincnt=1, bins="log", alpha=0.9, zorder=1)  # type: ignore
-    fig.colorbar(hb, ax=ax, label=r"${{ log_{10} }}$(count)")  # colorbar to indicate number of bins #type: ignore
+    _ = fig.colorbar(hb, ax=ax, label=r"${{ log_{10} }}$(count)")  # colorbar to indicate number of bins #type: ignore
 
     # x/y axis label, title, grid
-    ax.set_xlabel(r"Actual focus depth $(\mu m)$")  # type: ignore
-    ax.set_ylabel(r"Predicted focus depth $(\mu m)$")  # type: ignore
+    _ = ax.set_xlabel(r"Actual focus depth $(\mu m)$")  # type: ignore
+    _ = ax.set_ylabel(r"Predicted focus depth $(\mu m)$")  # type: ignore
     if title:
-        ax.set_title(title)  # type: ignore
+        _ = ax.set_title(title)  # type: ignore
     ax.grid(True, linestyle=":")  # type: ignore
 
     # calculate nrmse, ignore the psnr for this
@@ -260,8 +264,8 @@ def plot_actual_versus_predicted(
         logger.info(f"p-value  = {p_val:.3f}")
 
         # plot the mean value of the z_train predictions, with a band representing the error of the bins
-        ax.plot(x_train_np, mu_train_np, color="C0", lw=2, label="Train mean", zorder=4)  # type: ignore
-        ax.fill_between(  # type: ignore
+        _ = ax.plot(x_train_np, mu_train_np, color="C0", lw=2, label="Train mean", zorder=4)  # type: ignore
+        _ = ax.fill_between(  # type: ignore
             x_train_np,
             mu_train_np - q * sigma_train_np,
             mu_train_np + q * sigma_train_np,
@@ -291,9 +295,9 @@ def plot_actual_versus_predicted(
         logger.info(rf"% inside +-{q} sigma ribbon (val): {hit_rate:5.1f}%")
 
     # NOTE: must create legend after all plots have been created
-    ax.legend(loc="upper left")  # type: ignore
+    _ = ax.legend(loc="upper left")  # type: ignore
     plt.tight_layout()
-    _save_show_plot(fig, fname, save_fig, title)
+    _save_show_plot(in_fig=fig, save_path=fname, show=save_fig, title=title)
 
 
 def plot_residual_vs_true(
@@ -318,7 +322,7 @@ def plot_residual_vs_true(
     # np.digitize with n_bins points creates n_bins-1 intervals.
     # Iterating from 1 to len(bins_m_np) (or n_bins) means checking indices 1 to n_bins-1 based on digitize's output.
     for i in track(range(1, len(bins_m_np)), description="Bin checking (Plotly)..."):
-        mask = bin_idx == i
+        mask: np.intp = bin_idx == i
         if mask.any():  # at least one sample in the bin
             mu_list.append(res_m[mask].mean())
             sd_list.append(res_m[mask].std())
@@ -368,7 +372,7 @@ def plot_residual_vs_true(
         hovermode="closest",
     )
 
-    _save_show_plot(fig, savepath, show, title)
+    _save_show_plot(in_fig=fig, save_path=savepath, show=show, title=title)
 
 
 def plot_violin_depth_bins(
@@ -398,7 +402,7 @@ def plot_violin_depth_bins(
 
     fig = go.Figure(go.Violin(y=df["err_um"], x=df["bin"], width=0.9))
 
-    fig.update_layout(
+    _ = fig.update_layout(
         yaxis_zeroline=True,
         title_text=title,
         xaxis_title_text="True focus depth (µm)",
@@ -407,11 +411,11 @@ def plot_violin_depth_bins(
         hovermode="closest",
     )
 
-    _save_show_plot(fig, savepath, show, title)
+    _save_show_plot(in_fig=fig, save_path=savepath, show=show, title=title)
 
 
-# def plot_hexbin_with_marginals(
-#     z_pred_m: npt.NDArray[np.float64],
+# def plot_hexbin_with_marginalshow=s(
+#     z_pred_m: nptitle=t.NDArray[np.float64],
 #     z_true_m: npt.NDArray[np.float64],
 #     title: str = "Prediction density (val)",
 #     savepath: str = "phase_amp.png",
@@ -478,7 +482,8 @@ def plot_hexbin_with_marginals(
         }
     )
     fig = px.density_heatmap(df, x="z true", y="z pred", marginal_x="histogram")
-    _save_show_plot(fig, savepath, show, title)
+    assert type(fig) is go.Figure
+    _save_show_plot(in_fig=fig, save_path=savepath, show=show, title=title)
 
 
 # hologram_array: Original image, cropped to match reconstruction image.
@@ -511,43 +516,53 @@ def plot_amp_phase(
         # figure layout
         fig, axes = plt.subplots(2, 3, figsize=(11, 6))
         (ax_at, ax_ar, ax_ae, ax_pt, ax_pr, ax_pe) = axes.flatten()
+        # force each type to be an axes
+        assert type(ax_at) is Axes
+        assert type(ax_ar) is Axes
+        assert type(ax_ae) is Axes
+        assert type(ax_pt) is Axes
+        assert type(ax_pr) is Axes
+        assert type(ax_pe) is Axes
 
         # amplitude
-        im0 = ax_at.imshow(amp_true, cmap="gray")
-        ax_at.set_title("Amplitude – ground‑truth")
-        fig.colorbar(im0, ax=ax_at, shrink=0.8)
+        im0: AxesImage = ax_at.imshow(amp_true, cmap="gray")
+        _ = ax_at.set_title("Amplitude – ground‑truth")
+        _ = fig.colorbar(im0, ax=ax_at, shrink=0.8)
 
         amp_err = np.abs(amp_true - amp_recon)
-        im2 = ax_ae.imshow(amp_err, cmap="inferno")
-        ax_ae.set_title("Amplitude error")
-        fig.colorbar(im2, ax=ax_ae, shrink=0.8)
+        im2: AxesImage = ax_ae.imshow(amp_err, cmap="inferno")
+        _ = ax_ae.set_title("Amplitude error")
+        _ = fig.colorbar(im2, ax=ax_ae, shrink=0.8)
 
-        im3 = ax_pt.imshow(phase_true, cmap="twilight", vmin=-np.pi, vmax=np.pi)
-        ax_pt.set_title("Phase – ground‑truth")
-        fig.colorbar(im3, ax=ax_pt, shrink=0.8)
+        im3: AxesImage = ax_pt.imshow(phase_true, cmap="twilight", vmin=-np.pi, vmax=np.pi)
+        _ = ax_pt.set_title("Phase – ground‑truth")
+        _ = fig.colorbar(im3, ax=ax_pt, shrink=0.8)
 
         phase_err = _wrap_phase(phase_true - phase_recon)
         im5 = ax_pe.imshow(phase_err, cmap="twilight", vmin=-np.pi, vmax=np.pi)
-        ax_pe.set_title("Phase error (wrapped)")
-        fig.colorbar(im5, ax=ax_pe, shrink=0.8)
+        _ = ax_pe.set_title("Phase error (wrapped)")
+        _ = fig.colorbar(im5, ax=ax_pe, shrink=0.8)
 
     else:
         fig, axes = plt.subplots(2, 2, figsize=(8, 6))
         (ax_ar, ax_ae, ax_pr, ax_pe) = axes.flatten()  # only 4 axes
+        assert type(ax_ar) is Axes
+        assert type(ax_ae) is Axes
+        assert type(ax_pr) is Axes
+        assert type(ax_pe) is Axes
 
-        im1 = ax_ar.imshow(amp_recon, cmap="gray")
-        ax_ar.set_title("Amplitude – recon")
-        fig.colorbar(im1, ax=ax_ar, shrink=0.8)
+        im1: AxesImage = ax_ar.imshow(amp_recon, cmap="gray")
+        _ = ax_ar.set_title("Amplitude – recon")
+        _ = fig.colorbar(im1, ax=ax_ar, shrink=0.8)
 
         # phase
-        im4 = ax_pr.imshow(phase_recon, cmap="twilight", vmin=-np.pi, vmax=np.pi)
-        ax_pr.set_title("Phase – recon")
-        fig.colorbar(im4, ax=ax_pr, shrink=0.8)
+        im4: AxesImage = ax_pr.imshow(phase_recon, cmap="twilight", vmin=-np.pi, vmax=np.pi)
+        _ = ax_pr.set_title("Phase – recon")
+        _ = fig.colorbar(im4, ax=ax_pr, shrink=0.8)
 
-    # cosmetics
     for ax in axes.flatten():
         ax.set_xticks([])
         ax.set_yticks([])
 
     plt.tight_layout()
-    _save_show_plot(fig, savepath, show, title)
+    _save_show_plot(in_fig=fig, save_path=savepath, show=show, title=title)
