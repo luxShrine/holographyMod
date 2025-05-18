@@ -342,13 +342,13 @@ def train_autofocus_refactored(config: AutoConfig):
     # debug for classification bins
     if logger.isEnabledFor(logging.DEBUG) and config.auto_method == "class":
         logger.debug(
-            "unique train preds:",
-            np.unique(train_z_pred)[:10],
-            "…unique val   preds:",
-            np.unique(val_z_pred)[:10],
-            "…unique train true:",
-            np.unique(train_z_true)[:10],
-            "…",
+            "unique train preds: "
+            f"{np.unique(train_z_pred)[:10]}"
+            "...unique val preds: "
+            f"{np.unique(val_z_pred)[:10]}"
+            "...unique train true: "
+            f"{np.unique(train_z_true)[:10]}"
+            "...",
         )
 
     # Actual vs Predicted diff
