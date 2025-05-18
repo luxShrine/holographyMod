@@ -3,6 +3,8 @@
 import numpy as np
 import numpy.typing as npt
 
+from holo.util.log import logger
+
 
 def validate_bins(
     centers: npt.NDArray[np.float64],
@@ -29,6 +31,7 @@ def validate_bins(
 
     # prevent analyzing too few bins
     if len(good_bins) < 2:
-        raise Exception("Not enough populated bins to compute chi^2.")
+        logger.warning("Not enough populated bins to compute chi^2.")
+        return good_bins
     else:
         return good_bins
