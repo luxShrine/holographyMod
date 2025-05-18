@@ -30,7 +30,7 @@ class HologramFocusDataset(Dataset[tuple[ImageType, int]]):
         hologram_dir: Path = HOLO_DEF,
         metadata_csv: str = "ODP-DLHM-Database.csv",
         crop_size: int = 512,
-        class_steps: float = 20,
+        class_steps: float = 50,
     ) -> None:
         """Assign properties to hologram dataset.
 
