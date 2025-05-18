@@ -24,7 +24,7 @@ def main(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Print DEBUG messages to the terminal"),
     log_file: Path = typer.Option("debug.log", "--log-file", help="Path to the log file"),
 ) -> None:
-    """Set global options that apply to every sub-command. This function is executed **once** before any command body."""
+    """Set global options that apply to every sub-command."""
     # Send INFO vs DEBUG to the Rich console
     set_verbosity(verbose)
 
@@ -48,7 +48,7 @@ def train(
     ep: int = typer.Option(10, help="Number of training epochs."),
     learn_rate: float = typer.Option(1e-4, "--lr", help="How fast should the model change epoch to epoch"),
     device_type: str = typer.Option("cuda", "--device", help="Device ('cuda' or 'cpu')."),
-    analysis: bool = typer.Option(False, "--classfiication", "-c", help="Change analysis type to classification"),
+    analysis: bool = typer.Option(False, "--classfication", "-c", help="Change analysis type to classification"),
 ) -> None:
     """Train the autofocus model based on supplied dataset."""
     from holo.train.auto_caller import train_autofocus_refactored
@@ -107,7 +107,7 @@ def plot_train(
     show: bool = typer.Option(True, "--s", help="Save the output plots, or display them."),
 ):
     """Plot the data saved from autofocus training."""
-    import holo.analysis.metrics as met  # performance reasons, import locally in function
+    import holo.analysis.plots as plots  # performance reasons, import locally in function
 
     plot_info_list = sl.load_obj()
     plot_info = plot_info_list[0]  # unpack list of obj
@@ -126,14 +126,14 @@ def plot_train(
         )
     else:
         s_root = static_root().as_posix()
-        met.plot_residual_vs_true(
+        plots.plot_residual_vs_true(
             np.array(plot_info.z_train),
             np.array(plot_info.z_train_pred),
             title="Residual vs True depth (train)",
             savepath=(s_root / Path("residual_vs_true_train.png")).as_posix(),
             show=show,
         )
-        met.plot_residual_vs_true(
+        plots.plot_residual_vs_true(
             np.array(plot_info.z_test),
             np.array(plot_info.z_test_pred),
             title="Residual vs True depth (val)",
@@ -141,14 +141,14 @@ def plot_train(
             show=show,
         )
 
-        met.plot_violin_depth_bins(
+        plots.plot_violin_depth_bins(
             np.array(plot_info.z_train),
             np.array(plot_info.z_train_pred),
             title="Signed error distribution per depth slice (train)",
             savepath=(s_root / Path("error_violin_train.png")).as_posix(),
             show=show,
         )
-        met.plot_violin_depth_bins(
+        plots.plot_violin_depth_bins(
             np.array(plot_info.z_test),
             np.array(plot_info.z_test_pred),
             title="Signed error distribution per depth slice (val)",
@@ -156,14 +156,14 @@ def plot_train(
             show=show,
         )
 
-        met.plot_hexbin_with_marginals(
+        plots.plot_hexbin_with_marginals(
             np.array(plot_info.z_train),
             np.array(plot_info.z_train_pred),
             title="Prediction density (train)",
             savepath=(s_root / Path("hexbin_train.png")).as_posix(),
             show=show,
         )
-        met.plot_hexbin_with_marginals(
+        plots.plot_hexbin_with_marginals(
             np.array(plot_info.z_test),
             np.array(plot_info.z_test_pred),
             title="Prediction density (val)",
@@ -180,7 +180,7 @@ def plot_train(
 # 0.5-4 [um]
 @app.command()
 def reconstruction(
-    img_file_path: str = typer.Argument("best_model.pth", help="Path to image for reconstruction"),
+    img_file_path: str = typer.Argument("", help="Path to image for reconstruction"),
     model_path: str = typer.Argument("best_model.pth", help="Path to trained model to use for torch optics analysis"),
     backbone: str = typer.Argument("efficientnet_b4", help="Model type being loaded"),
     crop_size: int = typer.Argument(512, help="Pixel width and height of image"),
@@ -189,8 +189,9 @@ def reconstruction(
     dx: float = typer.Argument(1e-6, help="Size of image px (m)"),
 ):
     """Perform reconstruction on an hologram."""
-    import holo.analysis.metrics as met  # performance reasons, import locally in function
+    import holo.analysis.plots as plots  # performance reasons, import locally in function
     import holo.optics.reconstruction as rec
+    from holo.analysis.metrics import error_metric
 
     ckpt_file = Path("checkpoints") / model_path
     if not ckpt_file.exists():
