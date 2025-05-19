@@ -39,14 +39,14 @@ def main(
 @app.command()
 def train(
     ds_root: Path = typer.Argument(help="Directory containing hologram images."),
-    metadata: str = typer.Option("ODP-DLHM-Database.csv", "--meta", help="Path to the metadata CSV file."),
-    out: str = typer.Option("checkpoints", help="Directory to save checkpoints and logs."),
+    meta_csv_name: str = typer.Option("ODP-DLHM-Database.csv", "--meta", help="Path to the metadata CSV file."),
+    out_dir: str = typer.Option("checkpoints", help="Directory to save checkpoints and logs."),
     backbone: str = typer.Option("efficientnet_b4", "--backbone", "--bb", help="Model backbone name."),
-    crop: int = typer.Option(512, "--crop", "--c", help="Size to crop images to."),
-    value_split: float = typer.Option(0.2, "--vs", help="Fraction of data for validation."),
-    batch: int = typer.Option(16, "--batch", "--ba", help="Training batch size."),
+    crop_size: int = typer.Option(512, "--crop", "--c", help="Size to crop images to."),
+    val_split: float = typer.Option(0.2, "--vs", help="Fraction of data for validation."),
+    batch_size: int = typer.Option(16, "--batch", "--ba", help="Training batch size."),
     ep: int = typer.Option(10, help="Number of training epochs."),
-    learn_rate: float = typer.Option(1e-4, "--lr", help="How fast should the model change epoch to epoch"),
+    opt_lr: float = typer.Option(1e-4, "--lr", help="How fast should the model change epoch to epoch"),
     device_type: str = typer.Option("cuda", "--device", help="Device ('cuda' or 'cpu')."),
     analysis: bool = typer.Option(False, "--classfication", "-c", help="Change analysis type to classification"),
 ) -> None:
@@ -66,15 +66,17 @@ def train(
     # ep = 50
     # learn_rate = 1e-4
     #
-    mode: str = "reg"
+    auto_method: str = "reg"
     if analysis:
-        mode = "class"
+        auto_method = "class"
+        logger.info("Training for classification.")
     else:
         pass
 
     # WARN: not robust for all types, will need a change <05-09-25>
-    if backbone == "vit" and crop != 224:
+    if backbone == "vit" and crop_size != 224:
         logger.error(f"backbone of type {backbone} requires a crop size of 224, defaulting to appropriate crop size")
+        crop_size = 224
 
     if ds_root.exists():
         actual_ds_root = ds_root
@@ -84,16 +86,16 @@ def train(
         logger.warning(f"Path {ds_root} does not exist, defaulting to {actual_ds_root}")
 
     autofocus_config = AutoConfig(
-        out_dir=out,
-        meta_csv_name=metadata,
+        out_dir=out_dir,
+        meta_csv_name=meta_csv_name,
         backbone=backbone,
-        batch_size=batch,
+        batch_size=batch_size,
         epoch_count=ep,
-        crop_size=crop,
-        opt_lr=learn_rate,
-        val_split=value_split,
+        crop_size=crop_size,
+        opt_lr=opt_lr,
+        val_split=val_split,
         device_user=device_type,
-        auto_method=mode,
+        auto_method=auto_method,
     )
 
     _, _, plot_info = train_autofocus_refactored(autofocus_config)
