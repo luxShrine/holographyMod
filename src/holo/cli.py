@@ -53,19 +53,7 @@ def train(
     """Train the autofocus model based on supplied dataset."""
     from holo.train.auto_caller import train_autofocus_refactored
     from holo.train.auto_classes import AutoConfig
-    # NOTE: quick test settings
-    # batch = 8
-    # crop = 256
-    # ep = 3
-    # learn_rate = 1e-3
 
-    # NOTE: substantial test settings
-    # crop = 512
-    # value_split = 0.2
-    # batch = 16
-    # ep = 50
-    # learn_rate = 1e-4
-    #
     auto_method: str = "reg"
     if analysis:
         auto_method = "class"
