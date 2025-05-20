@@ -3,14 +3,14 @@ import pathlib
 import time
 from contextlib import contextmanager
 
+import torch
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.pretty import install as install_rich_pretty
 from rich.traceback import install as install_rich_traceback
 
-# ----------------------------------------------------------------------
+###############################################################################
 # console shared by rich progress & logging
-# ----------------------------------------------------------------------
 logger = logging.getLogger(__name__)
 console_ = Console()  # reuse elsewhere
 shell_handler = RichHandler(
@@ -23,15 +23,28 @@ shell_handler = RichHandler(
     keywords=["loss", "accuracy", "MAE", "train", "test"],  # highlight custom words
 )
 
-# ----------------------------------------------------------------------
+
+class TensorSummaryFilter(logging.Filter):
+    def filter(self, record):
+        record.msg = (
+            f"<Tensor shape={tuple(record.msg.shape)}>"
+            if isinstance(record.msg, torch.Tensor)
+            else record.msg
+        )
+        record.args = tuple(
+            f"<Tensor shape={tuple(x.shape)}>" if isinstance(x, torch.Tensor) else x
+            for x in record.args
+        )
+        return True
+
+
+###############################################################################
 # File handler keeps the long format
-# ----------------------------------------------------------------------
 logfile = pathlib.Path("debug.log")
 file_handler = logging.FileHandler(logfile, encoding="utf-8")
 
-# ----------------------------------------------------------------------
+###############################################################################
 # Assemble logger
-# ----------------------------------------------------------------------
 
 logger.propagate = False  # avoid double-printing if libraries use root
 
@@ -48,6 +61,7 @@ shell_formatter = logging.Formatter(fmt_shell)
 file_formatter = logging.Formatter(fmt_file)
 
 # sets the logs to use the format defined above
+shell_handler.addFilter(TensorSummaryFilter())
 shell_handler.setFormatter(shell_formatter)
 file_handler.setFormatter(file_formatter)
 logger.addHandler(shell_handler)
@@ -60,9 +74,9 @@ logging.basicConfig(
     force=True,  # overwrite any prior config
 )
 
-# ----------------------------------------------------------------------
+###############################################################################
 # rich.pretty & rich.traceback
-# ----------------------------------------------------------------------
+
 install_rich_pretty()  # pretty-print dicts, lists, numpy arrays,
 install_rich_traceback(  # color + locals when uncaught exception
     console=console_,
