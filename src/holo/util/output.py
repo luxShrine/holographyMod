@@ -3,21 +3,26 @@
 import numpy as np
 import numpy.typing as npt
 
+import holo.util.reason_checks as rc
 from holo.util.log import logger
 
 
 def validate_bins(
-    centers: npt.NDArray[np.float64],
+    centers: rc.Np1Array64,
     digitized_data: npt.NDArray[np.intp],
     min_samples: int,
-    z: npt.NDArray[np.float64],
+    z: rc.Np1Array64,
     sigma_floor: float = 1,
 ):
     """Check that bins are non-zero, and if so return statistical measures."""
-    good_bins: list[tuple[float, float, float]] = []  # initialize a list of non-zero bins for x, mu, sigma
+    good_bins: list[
+        tuple[float, float, float]
+    ] = []  # initialize a list of non-zero bins for x, mu, sigma
 
     for k, center in enumerate(centers):
-        mask = digitized_data == k  # assign only values where the center lines up with values of this particular bin
+        mask = (
+            digitized_data == k
+        )  # assign only values where the center lines up with values of this particular bin
         n = mask.sum()  # sum to find the total samples in the bin
         if n < min_samples:
             continue  # skip thinly populated bins
