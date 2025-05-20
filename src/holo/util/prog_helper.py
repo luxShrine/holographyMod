@@ -2,6 +2,7 @@ from rich.text import Text
 from rich.progress import ProgressColumn
 from rich.progress import Task
 
+
 class RateColumn(ProgressColumn):
     """Custom class for creating rate column."""
 
@@ -25,4 +26,3 @@ class MetricColumn(ProgressColumn):
         if val is None:
             return Text("–")
         return Text(self.fmt.format(val), style=self.style)
-
