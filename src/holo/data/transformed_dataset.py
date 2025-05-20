@@ -15,7 +15,9 @@ _T_co = TypeVar("_T_co", covariant=True)
 class TransformedDataset(Dataset[tuple[Any, Any]]):
     """Apply transforms by creating a wrapper dataset to avoid modifying original HologramFocusDataset."""
 
-    def __init__(self, subset: Subset[_T_co], transform: Callable[[Any], Any] | None, dataset_bin_ids: Tensor):
+    def __init__(
+        self, subset: Subset[_T_co], transform: Callable[[Any], Any] | None, dataset_bin_ids: Tensor
+    ):
         """Initialize the TransformedDataset.
 
         Args:
@@ -46,7 +48,11 @@ class TransformedDataset(Dataset[tuple[Any, Any]]):
         if self.transform:
             # Transform applies to x
             x = self.transform(x)  # Type of x might change here
-        return x, self.dataset_bin_ids[original_idx]  # type: ignore
+            if self.mode == "reg":
+                y = self.dataset_z_norm[original_idx]  # float32
+            else:
+                y = self.dataset_bin_ids[original_idx]  # long
+        return x, y
 
     def __len__(self) -> int:
         """Return the total number of items in the dataset."""
