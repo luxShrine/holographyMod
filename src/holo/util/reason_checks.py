@@ -55,6 +55,9 @@ def check_dataload(
     if selected_train_loader and selected_val_loader:
         # TODO: what do i expect, how to test for it? apply to all sub parts <luxShrine >
         if evaluation_metric:
+            # TODO: check that it matches autosocus type, and that the rande is reasonable
             if train_ds and val_ds:
+                # TODO: check that __get_item__ returns what I need
                 if z_sig and z_mu:
+                    # TODO: expected range, not too high/small <luxShrine >
                     print("")
