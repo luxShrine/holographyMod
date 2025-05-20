@@ -5,6 +5,7 @@ from typing import Any
 import torch
 
 from holo.util.log import logger
+from holo.util.reason_checks import UserDevice
 
 
 @dataclass
@@ -35,7 +36,7 @@ class AutoConfig:
     batch_size: int = 16
     crop_size: int = 224
     dataset_name: str = "hqdlhm"
-    device_user: str = "cuda"
+    device_user: UserDevice = UserDevice.CUDA
     epoch_count: int = 10
     grayscale: bool = True
     meta_csv_name: str = "ODP-DLHM-Database.csv"
@@ -87,7 +88,7 @@ class AutoConfig:
     def device(self):
         """Return the device to use in autofocus training."""
         actual_device = "cpu"  # Default to CPU
-        if self.device_user == "cuda":
+        if self.device_user == UserDevice.CUDA:
             if torch.cuda.is_available():
                 actual_device = "cuda"
             else:
