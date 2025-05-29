@@ -18,7 +18,7 @@ from rich.progress import (
 )
 from timm import create_model  # Make sure timm is installed if using ViT from there
 from torch import Tensor
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Dataset, Subset, random_split
 from torchvision import models
 from torchvision.transforms import v2
 
@@ -35,9 +35,31 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class TransformedDataset(Dataset):
+    def __init__(self, subset_obj: Subset, img_transform=None, label_transform=None):
+        self.subset_obj = subset_obj
+        self.img_transform = img_transform
+        self.label_transform = label_transform
+
+    def __getitem__(self, idx):
+        # Subset object calls __getitem__ of the wrapped dataset
+        img, label = self.subset_obj[idx]  # Gets (PIL Image, raw_label)
+
+        if self.img_transform:
+            img = self.img_transform(img)
+        if self.label_transform:
+            label = self.label_transform(label)
+        return img, label
+
+    def __len__(self):
+        return len(self.subset_obj)
+
+
 def train_autofocus(a_config: AutoConfig) -> PlotPred:
     # load data
-    holo_base_ds = HologramFocusDataset(a_config.analysis, a_config.meta_csv_name)
+    holo_base_ds = HologramFocusDataset(
+        a_config.analysis, a_config.meta_csv_name, a_config.num_classes
+    )
     test_base(holo_base_ds)
 
     # transform that data
@@ -84,23 +106,25 @@ def train_autofocus(a_config: AutoConfig) -> PlotPred:
 
 def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
     # dataset needs to be iterable in terms of pytorch, dataloader does such
-    # TODO: evaluate implementing extra transforms <05-24-25, luxShrine>
-    _extra_tf: list[nn.Module] = [
-        # Random rotation image with some probability
-        v2.RandomRotation([1, 30]),
-        v2.RandomAdjustSharpness(sharpness_factor=2),
-    ]
 
     num_labels: int = len(base)
     eval_len = int(a_cfg.val_split * num_labels)
     train_len = num_labels - eval_len
     if a_cfg.fixed_seed:
         generator = torch.Generator().manual_seed(42)
-        train_subset, eval_subset = random_split(base, [train_len, eval_len], generator)
+        train_indices, eval_indices = random_split(base, [train_len, eval_len], generator)
     else:
-        train_subset, eval_subset = random_split(base, [train_len, eval_len])
+        train_indices, eval_indices = random_split(base, [train_len, eval_len])
 
-    label_transform = v2.Lambda(lambda y: torch.as_tensor(y))
+    # TODO: evaluate implementing extra transforms <05-24-25, luxShrine>
+    extra_tf: list[nn.Module] = [
+        # flip image with some probability
+        v2.RandomHorizontalFlip(p=0.5),
+        v2.RandomVerticalFlip(p=0.5),
+        # Random rotation image with some probability
+        v2.RandomRotation([1, 30]),
+        # v2.RandomAdjustSharpness(sharpness_factor=2),
+    ]
 
     common_tf: list[nn.Module] = [
         # convert PIL to tensor
@@ -109,25 +133,64 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
         v2.ToDtype(torch.uint8, scale=True),
         # crop random area
         v2.RandomResizedCrop(size=(a_cfg.crop_size, a_cfg.crop_size), antialias=True),
-        # flip image with some probability
-        v2.RandomHorizontalFlip(p=0.5),
-        v2.RandomVerticalFlip(p=0.5),
         # normalize across channels, expects float
         v2.ToDtype(torch.float32, scale=True),
         v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ]
 
     # TODO: eval and train currently the same <05-24-25>
-    train_transform: v2.Compose = v2.Compose(common_tf)
     eval_transform: v2.Compose = v2.Compose(common_tf)
+    train_transform: v2.Compose = v2.Compose(common_tf + extra_tf)
 
-    # providing the dataset with these transforms will create a new dataset
-    # containing the transformed images
-    tf_eval_ds = HologramFocusDataset(
-        a_cfg.analysis, a_cfg.meta_csv_name, eval_transform, label_transform
+    eval_subset = Subset(base, eval_indices)
+    train_subset = Subset(base, train_indices)
+
+    # Define label transforms based on analysis type (handles normalization for REG)
+    if a_cfg.analysis == AnalysisType.REG:
+        # Calculate mu and sigma from the training subset's physical z-values
+        # Need to access original z_m from base dataset via indices of train_subset
+        train_z_physical_subset: Np1Array64 = base.z_m[train_subset.indices]
+        core_z_mu_val = train_z_physical_subset.mean()
+        core_z_sig_val = train_z_physical_subset.std()
+        if core_z_sig_val < 1e-6:  # Avoid division by zero or very small std
+            core_z_sig_val = 1.0
+            logger.warning(
+                f"Training subset z_m standard deviation is near zero. Setting to {core_z_sig_val} for normalization."
+            )
+
+        core_z_mu = Q_(core_z_mu_val, u.m)
+        core_z_sig = Q_(core_z_sig_val, u.m)
+
+        def _reg_label_transform_fn(z_raw_phys_val: np.float32) -> Tensor:
+            """Pass in physical value, return normalized z tensor."""
+            z_tensor = torch.as_tensor(z_raw_phys_val, dtype=torch.float32)
+            return (z_tensor - core_z_mu.magnitude) / core_z_sig.magnitude
+
+        # apply local function above to z values to create proper label
+        final_label_transform = v2.Lambda(_reg_label_transform_fn)
+        # True physical Zs for validation
+        base.z_m[eval_subset.indices]
+
+    else:
+        # simply convert to tensor
+        final_label_transform = v2.Lambda(
+            lambda z_raw_idx: torch.as_tensor(z_raw_idx, dtype=torch.long)
+        )
+        # Physical values of bin centers
+        core_z_mu = Q_(base.z_m.mean(), u.m)
+        core_z_sig = Q_(base.z_m.std(), u.m)
+
+    # providing the dataset with these transforms will create a new subset
+    # dataset containing the transformed images
+    tf_eval_ds = TransformedDataset(
+        subset_obj=eval_subset,
+        img_transform=eval_transform,
+        label_transform=final_label_transform,
     )
-    tf_train_ds = HologramFocusDataset(
-        a_cfg.analysis, a_cfg.meta_csv_name, train_transform, label_transform
+    tf_train_ds = TransformedDataset(
+        subset_obj=train_subset,
+        img_transform=train_transform,
+        label_transform=final_label_transform,
     )
 
     eval_dl: DataLoader[tuple[ImageType, Q_, Q_, npt.NDArray[Any]]] = DataLoader(
@@ -144,30 +207,6 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
     )
     test_loader(eval_dl)
     test_loader(train_dl)
-
-    if a_cfg.analysis == AnalysisType.REG:
-        model_output_dim = 1  # Regression predicts one value
-
-        # TODO: assign additional transformation <05-24-25>
-        # eval_metric_data = base_dataset.z_m  # Raw z magnitudes (meters) from full dataset
-        # core_z_mu = train_normalise_ds.mu_m  # Mean from training subset
-        # core_z_sig = train_normalise_ds.sig_m  # Std from training subset
-
-    elif a_cfg.analysis == AnalysisType.CLASS:
-        # Contextual mu/sig from the full base dataset for classification
-        model_output_dim = a_cfg.num_classes
-        # Classification predicts scores for num_classes (bins)
-        eval_metric_data = tf_train_ds.z_bins
-        core_z_mu = base.z_m.mean() * u.m
-        core_z_sig = base.z_m.std() * u.m
-
-        edges: npt.ArrayLike = tf_train_ds.z_bins
-        # WARN: does that makes sense?
-        eval_metric_data: npt.NDArray[np.int32] = 0.5 * (edges[:-1] + edges[1:])
-        logger.debug(f"eval_metric_data type: {type(eval_metric_data)}")
-        logger.debug(f"eval_metric_data: {eval_metric_data}")
-    else:
-        raise ValueError(f"Unsupported analysis type: {a_cfg.analysis}")
 
     # loss_fn = nn.CrossEntropyLoss() if a_cfg.analysis == AnalysisType.CLASS else nn.SmoothL1Loss()
     loss_fn = nn.CrossEntropyLoss() if a_cfg.analysis == AnalysisType.CLASS else nn.SmoothL1Loss()
