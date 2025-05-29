@@ -1,6 +1,5 @@
+from rich.progress import ProgressColumn, Task
 from rich.text import Text
-from rich.progress import ProgressColumn
-from rich.progress import Task
 
 
 class RateColumn(ProgressColumn):

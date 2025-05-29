@@ -11,7 +11,7 @@ from pathlib import Path
 # Absolute path to the top level of the repository
 # root = Path(__file__).resolve().parents[2].absolute()
 def repo_root() -> Path:
-    return Path(__file__).resolve().parents[3].absolute()
+    return Path(__file__).resolve().parents[4].absolute()
 
 
 # Absolute path to the `src` folder
