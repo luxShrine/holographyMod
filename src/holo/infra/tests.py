@@ -28,7 +28,7 @@ def test_base(ds: HologramFocusDataset) -> None:
     length_ds = len(ds)
     logger.info(f"length of base Hologram dataset is {length_ds}")
     # -- Test Types in __get_item__ --------------------------------------------------------------
-    image, label = ds[randint(0, length_ds - 1)]
+    _image, _label = ds[randint(0, length_ds - 1)]
     # z_m, wavelength_m, pixel_size_m = label
 
     # if not isImageType(image) or not isinstance(wavelength_m, Q_) or not isinstance(z_m, Q_):
