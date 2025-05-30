@@ -3,6 +3,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+import numpy as np
 import numpy.typing as npt
 import torch
 from torch.nn import Module
@@ -103,7 +104,7 @@ class AutoConfig:
 class CoreTrainer:
     """Class to hold specifically all the training information."""
 
-    evaluation_metric: npt.NDArray[int] | float
+    evaluation_metric: npt.NDArray[np.float64] | float
     model: Module
     loss_fn: Any
     optimizer: Optimizer
