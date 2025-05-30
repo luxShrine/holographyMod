@@ -1,4 +1,6 @@
+import faulthandler
 import logging
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +30,8 @@ from holo.infra.datamodules import HologramFocusDataset
 from holo.infra.tests import test_base
 from holo.infra.util.prog_helper import MetricColumn, RateColumn
 from holo.infra.util.types import Q_, AnalysisType, Np1Array64, u
+
+faulthandler.enable(file=sys.__stdout__)
 
 if TYPE_CHECKING:
     from PIL.Image import Image as ImageType
@@ -104,6 +108,7 @@ def train_autofocus(a_config: AutoConfig) -> PlotPred:
     )
 
 
+@profile
 def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
     # dataset needs to be iterable in terms of pytorch, dataloader does such
 
@@ -118,11 +123,13 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
 
     # TODO: evaluate implementing extra transforms <05-24-25, luxShrine>
     extra_tf: list[nn.Module] = [
+        # crop random area
+        v2.RandomResizedCrop(size=a_cfg.crop_size, antialias=True),
         # flip image with some probability
         v2.RandomHorizontalFlip(p=0.5),
         v2.RandomVerticalFlip(p=0.5),
         # Random rotation image with some probability
-        v2.RandomRotation([1, 30]),
+        # v2.RandomRotation([1, 30]),
         # v2.RandomAdjustSharpness(sharpness_factor=2),
     ]
 
@@ -131,19 +138,20 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
         v2.PILToTensor(),
         # ToTensor preserves original datatype, this ensures it is proper input type
         v2.ToDtype(torch.uint8, scale=True),
-        # crop random area
-        v2.RandomResizedCrop(size=(a_cfg.crop_size, a_cfg.crop_size), antialias=True),
+        v2.CenterCrop(size=a_cfg.crop_size),
         # normalize across channels, expects float
         v2.ToDtype(torch.float32, scale=True),
         v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ]
 
-    # TODO: eval and train currently the same <05-24-25>
+    # no random
     eval_transform: v2.Compose = v2.Compose(common_tf)
-    train_transform: v2.Compose = v2.Compose(common_tf + extra_tf)
+    train_transform: v2.Compose = v2.Compose(extra_tf + common_tf)
+    logger.debug("Train and evaluation transformations composed successfully.")
 
-    eval_subset = Subset(base, eval_indices)
-    train_subset = Subset(base, train_indices)
+    eval_subset = Subset(base, eval_indices.indices)
+    train_subset = Subset(base, train_indices.indices)
+    logger.debug("Train and evaluation subset created successfully")
 
     # Define label transforms based on analysis type (handles normalization for REG)
     if a_cfg.analysis == AnalysisType.REG:
@@ -169,8 +177,8 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
         # apply local function above to z values to create proper label
         final_label_transform = v2.Lambda(_reg_label_transform_fn)
         # True physical Zs for validation
-        base.z_m[eval_subset.indices]
-
+        evaluation_metric = base.z_m[eval_subset.indices]
+        model_output_dim = 1
     else:
         # simply convert to tensor
         final_label_transform = v2.Lambda(
@@ -179,6 +187,8 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
         # Physical values of bin centers
         core_z_mu = Q_(base.z_m.mean(), u.m)
         core_z_sig = Q_(base.z_m.std(), u.m)
+        evaluation_metric = base.z_bins[eval_subset.indices]
+        model_output_dim = a_cfg.num_classes
 
     # providing the dataset with these transforms will create a new subset
     # dataset containing the transformed images
@@ -192,19 +202,21 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
         img_transform=train_transform,
         label_transform=final_label_transform,
     )
+    logger.debug("transformed datasets created")
 
     eval_dl: DataLoader[tuple[ImageType, Q_, Q_, npt.NDArray[Any]]] = DataLoader(
         tf_eval_ds,
         batch_size=a_cfg.batch_size,
         shuffle=True,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=a_cfg.device == "cuda",
     )
     train_dl: DataLoader[tuple[ImageType, Q_, Q_, npt.NDArray[Any]]] = DataLoader(
         tf_train_ds,
         batch_size=a_cfg.batch_size,
         shuffle=True,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=a_cfg.device == "cuda",
     )
+    logger.debug("Dataloaders created successfully")
     test_loader(eval_dl)
     test_loader(train_dl)
 
@@ -223,7 +235,7 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
 
     # Create CoreTrainer
     core_trainer_config = CoreTrainer(
-        evaluation_metric=eval_metric_data,  # This is Np1Array64 of z_m or bin_centers_m
+        evaluation_metric=evaluation_metric,  # This is Np1Array64 of z_m or bin_centers_m
         model=model,
         loss_fn=loss_fn,
         optimizer=optimizer,
@@ -250,7 +262,10 @@ def test_loader(ds_loader: DataLoader) -> None:
         img = train_features[0].squeeze(1)
         img = img[1, :, :].numpy()
         label = train_labels[0]
-        logger.debug(f"label successfully grabbed: {np.identity(label)}")
+        if label.ndim == 0:
+            logger.debug(f"Sample label value: {label.item()}")
+        else:
+            logger.debug(f"Sample label tensor: {label}")
     except Exception as e:
         raise e
 
@@ -281,7 +296,7 @@ def _create_model(
 
 def test_training_config(t_cfg: CoreTrainer, a_cfg: AutoConfig) -> None:
     # depends on analysis
-    type_eval = type(t_cfg.evaluation_metric)
+    type_eval: type[npt.NDArray[np.float64] | float] = type(t_cfg.evaluation_metric)
     if a_cfg.analysis is a_cfg.analysis.CLASS:
         # must be bins, check how many, type
         assert isinstance(t_cfg.evaluation_metric, np.ndarray), (
@@ -301,10 +316,12 @@ def test_training_config(t_cfg: CoreTrainer, a_cfg: AutoConfig) -> None:
 
     # check type
     # TODO: check that you can pull expected items from ds
-    assert isinstance(t_cfg.val_ds, HologramFocusDataset), "t_cfg.val_ds is not "
-    f"HologramFocusDataset, found {type(t_cfg.val_ds)}"
-    assert isinstance(t_cfg.train_ds, HologramFocusDataset), "t_cfg.train_ds is not "
-    f"HologramFocusDataset, found {type(t_cfg.train_ds)}"
+    assert isinstance(t_cfg.val_ds, TransformedDataset), (
+        f"t_cfg.val_ds is not subset, found {type(t_cfg.val_ds)}"
+    )
+    assert isinstance(t_cfg.train_ds, TransformedDataset), (
+        f"t_cfg.train_ds is not subset, found {type(t_cfg.train_ds)}"
+    )
 
     # run through tester
     test_loader(t_cfg.train_loader)
@@ -342,8 +359,8 @@ def train_eval_epoch(
     val_task = progress_bar.add_task("Eval", total=len(epoch_cfg.val_loader), avg_loss=0)
 
     _ = epoch_cfg.model.train()
-    epoch_loss_sum = 0
-    epoch_total_samples = 0
+    train_loss_epoch = 0
+    train_total_samples = 0
     device = torch.device("cpu") if a_cfg.device == "cpu" else torch.device("cuda")
     # ensure model is on proper device
     _ = epoch_cfg.model.to(device)
@@ -357,10 +374,11 @@ def train_eval_epoch(
             progress_bar.reset(val_task, total=len(epoch_cfg.val_loader), val_loss=0, avg_loss=0)
             for imgs, labels in epoch_cfg.train_loader:
                 imgs, labels = (
-                    # imgs.to(device, non_blocking=True),
-                    imgs.to(device),
-                    # labels.to(device, non_blocking=True),
-                    labels.to(device),
+                    # PERF: Non-blocking speed up
+                    imgs.to(device, non_blocking=True),
+                    labels.to(device, non_blocking=True),
+                    # imgs.to(device),
+                    # labels.to(device),
                 )
                 assert next(epoch_cfg.model.parameters()).device == imgs.device == labels.device
 
@@ -369,6 +387,10 @@ def train_eval_epoch(
                 assert pred.dtype == imgs.dtype == torch.float32, (
                     "dtype mismatch of predictions and images in training."
                 )
+                # reduce tensor size down to one dimension as we are only looking for one prediction
+                if a_cfg.analysis == AnalysisType.REG and pred.ndim == 2 and pred.shape[1] == 1:
+                    pred = pred.squeeze(1)
+
                 # check loss fn type
                 if isinstance(epoch_cfg.loss_fn, nn.BCEWithLogitsLoss):
                     labels = labels.float().unsqueeze(1)  # BCE expects float 0/1
@@ -379,34 +401,36 @@ def train_eval_epoch(
                 # check that labels are in range expected
                 n_classes = pred.size(1)
                 if epochs == 0:
-                    # TODO: huge performance hit precalculate ?<05-26-25>
+                    # PERF: huge performance hit precalculate ?<05-26-25>
+                    # TODO: explain
                     if (labels.min() < 0) or (labels.max() >= n_classes):
                         raise Exception(f"label out of range: {labels.min()} – {labels.max()}")
-                loss_current: Tensor = epoch_cfg.loss_fn(pred, labels)
 
-                # reduce tensor size down to one dimension as we are only looking for one prediction
-                if a_cfg.analysis == AnalysisType.REG and pred.ndim == 2 and pred.shape[1] == 1:
-                    pred = pred.squeeze(1)
+                # this loss is the current average over the batch
+                # to find the total loss over the epoch we must sum over
+                # each mean loss times the number of images
+                train_loss_current: Tensor = epoch_cfg.loss_fn(pred, labels)
+                # sum the value of the loss, scaled to the size of image tensor
+                # PERF: huge performance hit <05-26-25>
+                # train_loss_epoch += train_loss_current.item() * imgs.size(0)
+                train_loss_epoch += train_loss_current.item()
+                train_total_samples += imgs.size(0)
 
                 # compute the gradient of the loss
-                _ = loss_current.backward()
+                _ = train_loss_current.backward()
                 # compute one step of the optimization algorithm
                 epoch_cfg.optimizer.step()
                 # reset gradients each loop
                 epoch_cfg.optimizer.zero_grad()
 
-                # sum the value of the loss, scaled to the size of image tensor
-                # TODO: huge performance hit <05-26-25>
-                epoch_loss_sum += loss_current.item() * imgs.size(0)
-                epoch_total_samples += imgs.size(0)
-
                 # update progress bar
                 progress_bar.update(
-                    train_task, advance=1, loss=f"{epoch_loss_sum / epoch_total_samples:.4f}"
+                    train_task, advance=1, loss=f"{train_loss_epoch / train_total_samples:.4f}"
                 )
 
+            # TODO: test, move to own function potentially
             # Check if any samples were processed
-            if epoch_total_samples == 0:
+            if train_total_samples == 0:
                 raise Exception("No samples processed in train_epoch. Returning 0.0 loss.")
             # Check if loader.dataset exists and is not None before calculating length
             dataset_len = len(epoch_cfg.train_loader.dataset[1])
@@ -448,10 +472,7 @@ def train_eval_epoch(
                         ):
                             outputs = outputs.squeeze(1)
 
-                        # this loss is the current average over the batch
                         current_loss = epoch_cfg.loss_fn(outputs, labels)
-                        # to find the total loss over the epoch we must sum over
-                        # each mean loss times the number of images
                         loss_sum_val += current_loss.item() * imgs.size(0)
                         total_samples_for_loss += imgs.size(0)
 
@@ -479,7 +500,7 @@ def train_eval_epoch(
                             )
 
                             # Sum predictions
-                            # TODO: huge performance hit <05-26-25>
+                            # PERF: huge performance hit <05-26-25>
                             abs_err_sum += (pred_classes == labels).sum().item()
                             # numbero of correct predictions
                             total_samples_for_metric += labels.size(0)
@@ -488,71 +509,76 @@ def train_eval_epoch(
                             progress_bar.update(
                                 val_task,
                                 advance=1,
-                                loss=f"{loss_sum_val / epoch_total_samples:.4f}",
+                                loss=f"{loss_sum_val / train_total_samples:.4f}",
                             )
 
-            if total_samples_for_loss == 0:
-                raise Exception("No samples processed in validate_epoch.")
-            # Should not happen if total_samples_for_loss > 0
-            if total_samples_for_metric == 0:
-                logger.error(
-                    "Mismatch in sample counts for validation metric calculation."
-                    " Returning 0.0 for metric."
-                )
-                metric_val = 0.0
-            else:
-                metric_val = abs_err_sum / total_samples_for_metric
+                    if total_samples_for_loss == 0:
+                        raise Exception("No samples processed in validate_epoch.")
+                    # Should not happen if total_samples_for_loss > 0
+                    if total_samples_for_metric == 0:
+                        logger.error(
+                            "Mismatch in sample counts for validation metric calculation."
+                            " Returning 0.0 for metric."
+                        )
+                        metric_val = 0.0
+                    else:
+                        metric_val = abs_err_sum / total_samples_for_metric
 
-            if a_cfg.analysis == AnalysisType.REG:
-                # using z value
-                labels_tensor = torch.as_tensor(epoch_cfg.evaluation_metric, dtype=torch.float32)
-                logger.debug(f"At {epochs / a_cfg.epoch_count} Val MAE: {metric_val:.9f} µm")
-            else:
-                # using bin value
-                labels_tensor = torch.as_tensor(epoch_cfg.evaluation_metric)
-                # Ensure percent
-                logger.debug(f"At {epochs / a_cfg.epoch_count} Val Acc: {metric_val * 100:.2f} %")
+                    if a_cfg.analysis == AnalysisType.REG:
+                        labels_tensor = torch.as_tensor(
+                            epoch_cfg.evaluation_metric, dtype=torch.float32
+                        )
+                        logger.debug(
+                            f"At {epochs / a_cfg.epoch_count} Val MAE: {metric_val:.9f} µm"
+                        )
+                    else:
+                        # using bin value
+                        labels_tensor = torch.as_tensor(epoch_cfg.evaluation_metric)
+                        # Ensure percent
+                        logger.debug(
+                            f"At {epochs / a_cfg.epoch_count} Val Acc: {metric_val * 100:.2f} %"
+                        )
 
-            avg_loss_train = epoch_loss_sum / epoch_total_samples
-            avg_loss_val = loss_sum_val / total_samples_for_loss
+                    avg_loss_train = train_loss_epoch / train_total_samples
+                    avg_loss_val = loss_sum_val / total_samples_for_loss
 
-            # Save latest model
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state_dict": epoch_cfg.model.state_dict(),
-                    "bin_centers": getattr(epoch_cfg.train_loader, "bin_centers", None),
-                    "num_bins": a_cfg.num_classes,
-                    "labels": labels_tensor,
-                    "optimizer_state_dict": epoch_cfg.optimizer.state_dict(),
-                    "train_loss": avg_loss_train,
-                    "val_loss": avg_loss_val,
-                    "val_metric": metric_val,
-                },
-                path_to_checkpoint,
-            )
-            # Save best model
-            if avg_loss_val < best_val_metric:
-                best_val_metric = avg_loss_val
-                torch.save(
-                    {
-                        "epoch": epoch,
-                        "model_state_dict": epoch_cfg.model.state_dict(),
-                        "labels": labels_tensor,
-                        "bin_centers": getattr(epoch_cfg.train_loader, "bin_centers", None),
-                        "num_bins": a_cfg.num_classes,
-                    },
-                    path_to_model,
-                )
+                    # Save latest model
+                    torch.save(
+                        {
+                            "epoch": epoch,
+                            "model_state_dict": epoch_cfg.model.state_dict(),
+                            "bin_centers": getattr(epoch_cfg.train_loader, "bin_centers", None),
+                            "num_bins": a_cfg.num_classes,
+                            "labels": labels_tensor,
+                            "optimizer_state_dict": epoch_cfg.optimizer.state_dict(),
+                            "train_loss": avg_loss_train,
+                            "val_loss": avg_loss_val,
+                            "val_metric": metric_val,
+                        },
+                        path_to_checkpoint,
+                    )
+                    # Save best model
+                    if avg_loss_val < best_val_metric:
+                        best_val_metric = avg_loss_val
+                        torch.save(
+                            {
+                                "epoch": epoch,
+                                "model_state_dict": epoch_cfg.model.state_dict(),
+                                "labels": labels_tensor,
+                                "bin_centers": getattr(epoch_cfg.train_loader, "bin_centers", None),
+                                "num_bins": a_cfg.num_classes,
+                            },
+                            path_to_model,
+                        )
 
-            progress_bar.update(
-                epoch_task,
-                advance=1,
-                train_loss=avg_loss_train,
-                val_loss=avg_loss_val,
-                val_err=metric_val,
-                lr=epoch_cfg.optimizer.param_groups[0]["lr"],
-            )
+                    progress_bar.update(
+                        epoch_task,
+                        advance=1,
+                        train_loss=avg_loss_train,
+                        val_loss=avg_loss_val,
+                        val_err=metric_val,
+                        lr=epoch_cfg.optimizer.param_groups[0]["lr"],
+                    )
 
     return avg_loss_train, avg_loss_val, metric_val, best_val_metric
 
