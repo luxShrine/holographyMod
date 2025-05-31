@@ -1,4 +1,5 @@
-from typing import cast
+import logging
+from typing import Literal, cast
 
 import numpy as np
 import torch
@@ -10,28 +11,40 @@ from torch.utils.data import DataLoader
 from holo.infra.datamodules import Np1Array32, Np1Array64
 from holo.infra.util.types import AnalysisType
 
+logger = logging.getLogger(__name__)
+
 
 def gather_z_preds(
     model: Module,
     analysis: AnalysisType,
     t_loader: DataLoader[tuple[Tensor, Tensor]],
     v_loader: DataLoader[tuple[Tensor, Tensor]],
-    usr_device: torch.device | str,
-) -> tuple[Np1Array32, Np1Array32, Np1Array32, Np1Array32]:
+    usr_device: Literal["cuda", "cpu"],
+    bin_centers_phys: Np1Array64 | None = None,
+    z_mu_phys: float | None = None,
+    z_sig_phys: float | None = None,
+) -> tuple[Np1Array64, Np1Array64, Np1Array64, Np1Array64]:
     """Combine model predictions info format appropriate for comparison.
 
     Args:
         model (Module): Class of neural network used for prediction.
-        analysis (str): Type of analysis performed (regression "reg" or classification).
-        loader (DataLoader): Iterable that contains dataset samples.
+        analysis (AnalysisType): Type of analysis performed.
+        t_loader (DataLoader): Iterable that contains training dataset samples.
+        v_loader (DataLoader): Iterable that contains evaluation dataset samples.
         dataset (HologramFocusDataset): Custom dataset object for passing in bin values.
-        device (str): Device used for analysis.
+        usr_device (str): Device used for analysis.
+        z_mu_phys: Mean of training z_values, physical units for regression.
+        z_sig_phys: Std of training z_values, physical units for regression.
+        bin_centers_phys: Physical values of bin centers, for classification.
 
     Returns:
-        tuple[NDArray, NDArray]: The z-value predictions and truth values.
+        tuple[NDArray, NDArray, NDArray, NDArray]: The z-value predictions and truth
+        values for each respective loader.
 
     """
     _: Module = model.eval()  # set model into evaluation rather than training mode
+    _ = model.to(usr_device)  # ensure model is on expected device
+    logger.info(f"Using: {usr_device}, for recovering Z values.")
     eval_z_pred_list: list[Np1Array64] = []
     eval_z_true_list: list[Np1Array64] = []
     train_z_pred_list: list[Np1Array64] = []
@@ -39,64 +52,50 @@ def gather_z_preds(
 
     with torch.no_grad():
         for loader in [t_loader, v_loader]:
-            for imgs, labels in track(loader, "Gathering z predictions..."):  # y is class index
-                # non_blocking corresponds to allowing for multiple tensors to be sent to device
+            for imgs, labels in track(loader, "Gathering z predictions..."):
+                # non_blocking means allowing for multiple tensors to be sent to device
                 imgs = imgs.to(usr_device, non_blocking=True)
                 labels_device = labels.to(usr_device, non_blocking=True)
+                assert next(model.parameters()).device == imgs.device == labels.device, (
+                    f"Images {imgs.device}, labels {labels.device}, or model {next(model.parameters()).device} not on same device."
+                )
 
                 # pass in data to model
-                outputs = model(imgs)
+                preds = model(imgs)
+                # convert back to physical units
+                if analysis == AnalysisType.REG:
+                    if z_mu_phys is None or z_sig_phys is None:
+                        raise ValueError(
+                            "z_mu_phys and z_sig_phys required for regression de-normalization"
+                        )
 
-                # bring predictions back to cpu
-                # argmax returns a tensor containing the indices that hold
-                # the maximimum values of the input tensor across the selected
-                # dimension/axis. Here it grabs the indicies of the predictions,
-                # which ought to correspond to the integer bins in the label.
-                outputs_arr = outputs.argmax(dim=1).unsqueeze(0).cpu().numpy()
-                labels_arr = labels_device.unsqueeze(0).cpu().numpy()
+                    # bring predictions back to cpu
+                    preds_arr = preds.squeeze().cpu().numpy() * z_sig_phys + z_mu_phys
+                    labels_arr = labels.cpu().numpy() * z_sig_phys + z_mu_phys
+
+                elif analysis == AnalysisType.CLASS:
+                    if bin_centers_phys is None:
+                        raise ValueError("bin_centers_phys required for classificaton conversion")
+
+                    # argmax returns a tensor containing the indices that hold
+                    # the maximimum values of the input tensor across the selected
+                    # dimension/axis. Here it grabs the indicies of the predictions,
+                    # which ought to correspond to the integer bins in the label.
+                    preds_arr = preds.argmax(dim=1).unsqueeze(0).cpu().numpy()
+                    labels_arr = labels_device.unsqueeze(0).cpu().numpy()
 
                 if loader == t_loader:
-                    train_z_pred_list += list(outputs_arr[:, 0])
+                    train_z_pred_list += list(preds_arr[:, 0])
                     train_z_true_list += list(labels_arr[:, 0])
                 else:
-                    eval_z_pred_list += list(outputs_arr[:, 0])
+                    eval_z_pred_list += list(preds_arr[:, 0])
                     eval_z_true_list += list(labels_arr[:, 0])
 
-                # convert z to um from object parameters
-                # if analysis == "reg":  # float outputs are depth in meters
-                #     # TODO: setup z_mu/sigma
-                #
-                #     outputs_arr = cast(
-                #     "Np1Array64",
-                #     (imgs.out.squeeze(1) * dataset.z_sigma + dataset.z_mu).cpu().numpy(),
-                # )
-                #     z_tgt = cast("Np1Array64", (preds * dataset.z_sigma + dataset.z_mu).cpu().numpy())
-                # else:  # abstraction -> physical
-                #     # pick the form that matches network
-                #     if imgs.ndim == 2:
-                #         # if model outputs 2D tensor of scores/probabilities, set to 1D
-                #         cls_pred = imgs.argmax(dim=1).cpu()
-                #     else:
-                #         # if model outputs tensor already including an index,
-                #         # "squeeze" out anything but the data
-                #         cls_pred = imgs.squeeze().cpu().long()
-                #         cls_pred = imgs.argmax(1).cpu()
-                #
-                #     cls_pred_num: npt.NDArray[np.int32] = cast(
-                #         "npt.NDArray[np.int32]", (cls_pred.numpy())
-                #     )
-                #     edges: npt.ArrayLike = dataset.z_bins
-                #     bin_centers_m: npt.NDArray[int] = 0.5 * (edges[:-1] + edges[1:])
-                #     z_pred: Np1Array64 = bin_centers_m[cls_pred_num]
-                #     z_tgt: Np1Array64 = bin_centers_m[y.cpu().numpy()]
-
-            # store each of these values
-
-    # TODO: convert from bins to physical values <05-26-25>
-    eval_z_pred_arr = np.array(eval_z_pred_list)
-    eval_z_true_arr = np.array(eval_z_true_list)
-    train_z_pred_arr = np.array(train_z_pred_list)
-    train_z_true_arr = np.array(train_z_true_list)
+    # store each of these values
+    eval_z_pred_arr: Np1Array64 = np.array(eval_z_pred_list, dtype=np.float64)
+    eval_z_true_arr: Np1Array64 = np.array(eval_z_true_list, dtype=np.float64)
+    train_z_pred_arr: Np1Array64 = np.array(train_z_pred_list, dtype=np.float64)
+    train_z_true_arr: Np1Array64 = np.array(train_z_true_list, dtype=np.float64)
 
     return (eval_z_pred_arr, eval_z_true_arr, train_z_pred_arr, train_z_true_arr)
 
