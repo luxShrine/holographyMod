@@ -1,16 +1,17 @@
 import json
 import logging
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import numpy.typing as npt
 import torch
+from torch import Tensor
 from torch.nn import Module
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, Dataset
 
-from holo.infra.util.types import Q_, AnalysisType, UserDevice
+from holo.infra.util.types import Q_, AnalysisType, DisplayType, UserDevice
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ class AutoConfig:
             }
         )
 
-    def device(self):
+    def device(self) -> Literal["cuda", "cpu"]:
         """Return the device to use in autofocus training."""
         actual_device = "cpu"  # Default to CPU
         if self.device_user == UserDevice.CUDA:
@@ -127,33 +128,44 @@ class PlotPred:
     z_train: list[Any]
     zerr_train: list[Any]
     zerr_test: list[Any]
+    bin_edges: npt.NDArray[np.float64] | None
     title: str
-    fname: str
-    save_fig: bool = True
+    path_to_plot: str
+    display: DisplayType
 
 
-# TODO: currently a static name <05-09-25>
-def load_obj() -> list[PlotPred]:
-    """Load saved json containing object of class plotPred."""
+@dataclass
+class GatherZ:
+    """Class for storing z values retrieved from gather_z_values."""
+
+    model: Module
+    analysis: AnalysisType
+    t_loader: DataLoader[tuple[Tensor, Tensor]]
+    v_loader: DataLoader[tuple[Tensor, Tensor]]
+    usr_device: Literal["cuda", "cpu"]
+    bin_centers_phys: npt.NDArray[np.float64] | None = None
+    z_mu_phys: float | None = None
+    z_sig_phys: float | None = None
+
+
+def load_obj(
+    json_name: str = "train_data", dataclass: str = "PlotPred"
+) -> list[PlotPred | GatherZ]:
+    """Load saved json containing object of class plotPred or GatherZ."""
     try:
-        with open("train_data.json") as fd:
-            return [PlotPred(**x) for x in json.load(fd)]
+        with open(json_name) as file:
+            if dataclass == "PlotPred":
+                return [PlotPred(**x) for x in json.load(file)]
+            if dataclass == "GatherZ":
+                return [GatherZ(**y) for y in json.load(file)]
+            raise Exception(f"Incorrect dataclass passed {dataclass}")
     except FileNotFoundError:
         logger.exception(FileNotFoundError)
         return []
 
 
-def save_obj(c: PlotPred):
-    """Save object of class plotPred."""
-    data = [asdict(x) for x in load_obj() + [c]]
-    with open("train_data.json", "w") as fd:
-        json.dump(data, fd)
-
-
-# TODO: class to hold specifically all the metric data for plotting
-# @dataclass
-# class AutofocusMetrics():
-#     gather_z_fn
-#     plot_fn
-#
-#
+def save_obj(c: PlotPred | GatherZ, json_name: str = "train_data") -> None:
+    """Save object of class plotPred or GatherZ."""
+    data = [asdict(x) for x in [c]]
+    with open(json_name, "w") as file:
+        json.dump(data, file)
