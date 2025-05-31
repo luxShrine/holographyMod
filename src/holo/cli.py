@@ -5,7 +5,7 @@ import click
 import numpy as np
 
 # import typer
-from holo.infra.dataclasses import load_obj, save_obj
+from holo.infra.dataclasses import PlotPred, load_obj, save_obj
 from holo.infra.log import init_logging
 from holo.infra.util.image_processing import build_metadata_csv, crop_max_square, norm
 from holo.infra.util.paths import MW_data, static_root
@@ -130,55 +130,52 @@ def plot_train(
     logger.info("plotting training data...")
 
     plot_info = load_obj()[0]
-    print(plot_info.save_fig)
-    print(np.array(plot_info.z_test_pred))
+    assert isinstance(plot_info, PlotPred), f"plot_info is not PlotPred, found {type(plot_info)}"
+    logger.info(f"Plotting function with option: {display}")
+    # update plot obj with desired values
     s_root = static_root().as_posix()
+    plot_info.display = display
+
     # TODO: add method for choosing plot based on regression or not automatically
+    # plot info varies from plot to plot
     if analysis:
         plots.plot_actual_versus_predicted(
             plot_info,
             title="Classification Residual",
-            save_root=(s_root / Path("class_residual_vs_true_train.png")).as_posix(),
-            display=display,
+            path_to_plot=(s_root / Path("class_residual_vs_true_train.png")).as_posix(),
         )
     else:
         plots.plot_residual_vs_true(
             plot_info,
             title="Residual vs True depth (train)",
-            savepath=(s_root / Path("residual_vs_true_train.png")).as_posix(),
-            display=display,
+            path_to_plot=(s_root / Path("residual_vs_true_train.png")).as_posix(),
         )
         plots.plot_residual_vs_true(
             plot_info,
             title="Residual vs True depth (val)",
-            savepath=(s_root / Path("residual_vs_true_val.png")).as_posix(),
-            display=display,
+            path_to_plot=(s_root / Path("residual_vs_true_val.png")).as_posix(),
         )
 
         plots.plot_violin_depth_bins(
             plot_info,
             title="Signed error distribution per depth slice (train)",
-            savepath=(s_root / Path("error_violin_train.png")).as_posix(),
-            display=display,
+            path_to_plot=(s_root / Path("error_violin_train.png")).as_posix(),
         )
         plots.plot_violin_depth_bins(
             plot_info,
             title="Signed error distribution per depth slice (val)",
-            savepath=(s_root / Path("error_violin_val.png")).as_posix(),
-            display=display,
+            path_to_plot=(s_root / Path("error_violin_val.png")).as_posix(),
         )
 
         plots.plot_hexbin_with_marginals(
             plot_info,
             title="Prediction density (train)",
-            savepath=(s_root / Path("hexbin_train.png")).as_posix(),
-            display=display,
+            path_to_plot=(s_root / Path("hexbin_train.png")).as_posix(),
         )
         plots.plot_hexbin_with_marginals(
             plot_info,
             title="Prediction density (val)",
-            savepath=(s_root / Path("hexbin_val.png")).as_posix(),
-            display=display,
+            path_to_plot=(s_root / Path("hexbin_val.png")).as_posix(),
         )
 
 
