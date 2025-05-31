@@ -1,6 +1,4 @@
-import faulthandler
 import logging
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,13 +23,11 @@ from torchvision import models
 from torchvision.transforms import v2
 
 from holo.core.metrics import gather_z_preds
-from holo.infra.dataclasses import AutoConfig, CoreTrainer, PlotPred
+from holo.infra.dataclasses import AutoConfig, CoreTrainer, GatherZ, PlotPred
 from holo.infra.datamodules import HologramFocusDataset
 from holo.infra.tests import test_base
 from holo.infra.util.prog_helper import MetricColumn, RateColumn
 from holo.infra.util.types import Q_, AnalysisType, Np1Array64, u
-
-faulthandler.enable(file=sys.__stdout__)
 
 if TYPE_CHECKING:
     from PIL.Image import Image as ImageType
@@ -72,10 +68,12 @@ def train_autofocus(a_config: AutoConfig) -> PlotPred:
     train_cfg: CoreTrainer = transform_ds(holo_base_ds, a_config)
     test_training_config(train_cfg, a_config)
 
-    # train/validate, one epoch
+    # For measuring evaluation: classificaton is maximizing correct bins,
+    # regression is minimizing the error from expected
     best_val_metric: float = (
         float("inf") if a_config.analysis == AnalysisType.REG else -float("inf")
     )
+    # train/validate, one epoch,
     avg_loss_train, avg_loss_val, metric_val, best_val_metric = train_eval_epoch(
         train_cfg, a_config, best_val_metric
     )
@@ -83,14 +81,44 @@ def train_autofocus(a_config: AutoConfig) -> PlotPred:
     logger.info(f"avg_loss_val: {avg_loss_val}")
     logger.info(f"avg_loss_train: {avg_loss_train}")
 
-    # -- Get & Save Training Data for Plotting ---------------------------------------------------
-    train_z_pred, train_z_true, val_z_pred, val_z_true = gather_z_preds(
-        train_cfg.model,
-        a_config.analysis,
-        train_cfg.train_loader,
-        train_cfg.val_loader,
-        "cuda",
+    # regression needs std and average
+    z_mu: float | None = (
+        float(train_cfg.z_mu.magnitude) if a_config.analysis == AnalysisType.REG else None
     )
+    z_sig: float | None = (
+        float(train_cfg.z_sig.magnitude) if a_config.analysis == AnalysisType.REG else None
+    )
+    # For class, train_cfg.evaluation_metric is base.bin_centers
+    bin_centers = train_cfg.evaluation_metric if a_config.analysis == AnalysisType.CLASS else None
+
+    # -- Get & Save Training Data for Plotting ---------------------------------------------------
+    # store for ease of use during debugging
+    gather_z_obj = GatherZ(
+        model=train_cfg.model,
+        analysis=a_config.analysis,
+        t_loader=train_cfg.train_loader,
+        v_loader=train_cfg.val_loader,
+        usr_device=a_config.device(),
+        bin_centers_phys=bin_centers,
+        z_mu_phys=z_mu,
+        z_sig_phys=z_sig,
+    )
+    # Save the dictionary to a JSON file
+    # gather_json_strpath = Path("gather_z.json").as_posix()
+    # gather_pickle_strpath = Path("gather_z.pkl").as_posix()
+    # with open(gather_pickle_strpath, "wb") as f:
+    #     pickle.dump(gather_z_obj, f)
+    # save_obj(gather_z_obj, gather_json_strpath)
+    return return_z(holo_base_ds, a_config, gather_z_obj)
+
+
+def return_z(holo_base_ds, a_config, gather):
+    # gather_pickle_strpath = Path("gather_z.pkl").as_posix()
+    # with open(gather_pickle_strpath, "rb") as f:
+    #     gather = pickle.load(f)
+    # gather = load_obj("gather_z.json", "GatherZ")[0]
+    assert isinstance(gather, GatherZ), f"gather is not GatherZ, found {type(gather)}"
+    train_z_pred, train_z_true, val_z_pred, val_z_true = gather_z_preds(**gather.__dict__)
     # TODO: get something more robust
     # Actual vs Predicted diff
     train_err: Np1Array64 = np.abs(train_z_pred - train_z_true)
@@ -102,9 +130,10 @@ def train_autofocus(a_config: AutoConfig) -> PlotPred:
         train_z_true.tolist(),
         train_err.tolist(),
         val_err.tolist(),
-        "Actual vs Predicted Focus (µm)",
-        str(Path(a_config.out_dir) / Path("focus_depth_actual_vs_pred.png")),
-        True,
+        holo_base_ds.bin_edges.tolist(),
+        "plot",
+        str(Path(a_config.out_dir) / Path("plot.png")),
+        "display",
     )
 
 
@@ -362,6 +391,7 @@ def train_eval_epoch(
     train_loss_epoch = 0
     train_total_samples = 0
     device = torch.device("cpu") if a_cfg.device == "cpu" else torch.device("cuda")
+    logger.info(f"Using: {device}, for training.")
     # ensure model is on proper device
     _ = epoch_cfg.model.to(device)
     # -- Training --------------------------------------------------------------------------------
@@ -380,7 +410,9 @@ def train_eval_epoch(
                     # imgs.to(device),
                     # labels.to(device),
                 )
-                assert next(epoch_cfg.model.parameters()).device == imgs.device == labels.device
+                assert next(epoch_cfg.model.parameters()).device == imgs.device == labels.device, (
+                    f"Images {imgs.device}, labels {labels.device}, or model {next(epoch_cfg.model.parameters()).device} not on same device."
+                )
 
                 # pass in tensors of images, to get output of tensor data
                 pred: Tensor = epoch_cfg.model(imgs)
@@ -399,12 +431,12 @@ def train_eval_epoch(
                     labels = labels.long()
 
                 # check that labels are in range expected
-                n_classes = pred.size(1)
-                if epochs == 0:
-                    # PERF: huge performance hit precalculate ?<05-26-25>
-                    # TODO: explain
-                    if (labels.min() < 0) or (labels.max() >= n_classes):
-                        raise Exception(f"label out of range: {labels.min()} – {labels.max()}")
+                # n_classes = pred.size(1)
+                # if epochs == 0:
+                #     # PERF: huge performance hit precalculate ?<05-26-25>
+                #     # TODO: explain
+                #     if (labels.min() < 0) or (labels.max() >= n_classes):
+                #         raise Exception(f"label out of range: {labels.min()} – {labels.max()}")
 
                 # this loss is the current average over the batch
                 # to find the total loss over the epoch we must sum over
@@ -557,9 +589,17 @@ def train_eval_epoch(
                         },
                         path_to_checkpoint,
                     )
+                    save_best_model_flag = False
+                    if a_cfg.analysis == AnalysisType.REG:  # Lower MAE is better
+                        if metric_val < best_val_metric:
+                            best_val_metric = metric_val
+                            save_best_model_flag = True
+                    else:  # Higher Accuracy is better
+                        if metric_val > best_val_metric:
+                            best_val_metric = metric_val
+                            save_best_model_flag = True
                     # Save best model
-                    if avg_loss_val < best_val_metric:
-                        best_val_metric = avg_loss_val
+                    if save_best_model_flag:
                         torch.save(
                             {
                                 "epoch": epoch,
@@ -567,6 +607,7 @@ def train_eval_epoch(
                                 "labels": labels_tensor,
                                 "bin_centers": getattr(epoch_cfg.train_loader, "bin_centers", None),
                                 "num_bins": a_cfg.num_classes,
+                                "val_metric": best_val_metric,
                             },
                             path_to_model,
                         )
