@@ -12,11 +12,9 @@ import polars as pl
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from rich.progress import track
-from scipy.stats import chi2 as chi2_dist
 
 from holo.core.metrics import wrap_phase
 from holo.infra.dataclasses import PlotPred
-from holo.infra.util.image_processing import validate_bins
 from holo.infra.util.paths import static_root
 from holo.infra.util.types import DisplayType
 
@@ -31,17 +29,16 @@ def _save_show_plot(
     in_fig: Figure | go.Figure,
     display: DisplayType,
     title: str | None,
-    save_path: str = "",
+    path_to_plot: str = "",
 ):
     """Help for repeated save or show functionality."""
-    print()
-    if len(save_path) < 1:
-        save_path = static_root().as_posix()
+    if len(path_to_plot) < 1:
+        path_to_plot = static_root().as_posix()
     if title is None:
         title = "unset_title"
     if type(in_fig) is Figure:  # matplotlib
-        in_fig.savefig(save_path, dpi=300)
-        logger.info(f"{title} plot saved to, {Path(save_path)}")
+        in_fig.savefig(path_to_plot, dpi=300)
+        logger.info(f"{title} plot saved to, {Path(path_to_plot)}")
         if display != DisplayType.SAVE.value:
             logger.info("Displaying matplotlib plot...")
             plt.show()
@@ -51,30 +48,62 @@ def _save_show_plot(
             in_fig.show()
         else:
             logger.info("Saving plotly figure...")
-            html_savepath = Path(save_path).with_suffix(".html")
+            html_savepath = Path(path_to_plot).with_suffix(".html")
             _ = in_fig.write_html(html_savepath)
             logger.info(f"{title} plot saved to, {html_savepath}")
     else:
         logger.error("Unkown plot type passed to save plot function.")
 
 
-def plot_actual_versus_predicted(
-    plot_pred: PlotPred, title, save_root, display: DisplayType
-) -> None:
+def plot_actual_versus_predicted(plot_info: PlotPred, title, path_to_plot) -> None:
     """Plot actual vs. predicted values for both training and testing sets for classification."""
+    # confusion matrix plot
+    from sklearn.metrics import confusion_matrix
+
+    z_val = np.array(plot_info.z_test, dtype=np.float64)
+    z_train = np.array(plot_info.z_train, dtype=np.float64)
+    z_val_pred = np.array(plot_info.z_test_pred, dtype=np.float64)
+    z_train_pred = np.array(plot_info.z_train_pred, dtype=np.float64)
+    bin_edges = np.array(plot_info.bin_edges, dtype=np.float64)
     # check for errors to ensure can be plotted
-    z_val = np.array(plot_pred.z_test)
-    z_train = np.array(plot_pred.z_train)
-    z_val_pred = np.array(plot_pred.z_test_pred)
-    # __AUTO_GENERATED_PRINT_VAR_START__
-    print(
-        f"plot_actual_versus_predicted z_val_pred: {str(z_val_pred)}"
-    )  # __AUTO_GENERATED_PRINT_VAR_END__
-    z_train_pred = np.array(plot_pred.z_train_pred)
     assert z_val.shape == z_val_pred.shape, "z_val is not the same shape as z_val_pred"
     assert z_train.shape == z_train_pred.shape, "z_train is not the same shape as z_train_pred"
-    fig: go.Figure = go.Figure()
+    assert isinstance(bin_edges[0], np.float64), (
+        f"bin_edges contains something other than np.float64, found {type(bin_edges[0])}"
+    )
 
+    # Convert physical values back to bin indices
+    # Ensure bin_edges are sorted
+    y_true_indices = np.clip(np.digitize(z_train, bin_edges), 1, len(bin_edges) - 1) - 1
+    y_pred_indices = np.clip(np.digitize(z_train_pred, bin_edges), 1, len(bin_edges) - 1) - 1
+
+    num_classes = len(bin_edges) - 1
+    # class_labels = [f"Bin {i}" for i in range(num_classes)]
+    # Or use bin_centers for labels:
+    # bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    # class_labels = [f"{c:.2f}µm" for c in bin_centers]
+
+    cm = confusion_matrix(y_true_indices, y_pred_indices, labels=list(range(num_classes)))
+
+    # fig, ax = plt.subplots(figsize=(max(6, num_classes*0.5), max(5, num_classes*0.4)))
+    # ax.set_xlabel('Predicted Label')
+    # ax.set_ylabel('True Label')
+
+    confusion_matrix_plot = go.Heatmap(
+        z=cm,
+        x=["Predicted Negative", "Predicted Positive"],
+        y=["Actual Negative", "Actual Positive"],
+        colorscale="Blues",
+    )
+    fig1 = go.Figure(data=confusion_matrix_plot)
+    fig1.update_layout(
+        title="Confusion Matrix", xaxis_title="Predicted Label", yaxis_title="True Label"
+    )
+    fig1.write_html(Path("confused.html"))
+
+    fig2: go.Figure = go.Figure()
+
+    # correct plot via matplotlib
     # plt.scatter(eval_z_pred_arr, eval_z_true_arr, alpha=0.5, color="yellow", label="Validation")
     # plt.scatter(train_z_pred_arr, train_z_true_arr, alpha=0.1, color="blue", label="Train")
     # plt.legend()
@@ -91,8 +120,8 @@ def plot_actual_versus_predicted(
     )  # combine all values into one array
     span = np.ptp(conc)  # returns range of values "peak to peak"
     # create the limits of the plot so it pads the plotted line
-    z_min: float = cast("float", conc.min() - span * 1e-6)
-    z_max: float = cast("float", conc.max() + span * 1e-6)
+    cast("float", conc.min() - span * 1e-6)
+    cast("float", conc.max() + span * 1e-6)
 
     # if my model was perfect it would match the known dataset values to the predicted values
     # create an ideal line to measure against
@@ -100,12 +129,12 @@ def plot_actual_versus_predicted(
 
     # for the validation values, use a hexbin which shows the density of points in a given region of the plot
 
-    _ = fig.add_trace(go.Scatter(x=z_train, y=z_train_pred, mode="markers", name="train"))
-    _ = fig.add_trace(go.Scatter(x=z_val, y=z_val_pred, mode="markers", name="val"))
+    _ = fig2.add_trace(go.Scatter(x=z_train, y=z_train_pred, mode="markers", name="train"))
+    _ = fig2.add_trace(go.Scatter(x=z_val, y=z_val_pred, mode="markers", name="val"))
 
     if title:
         # x/y axis label, title, grid
-        _ = fig.update_layout(
+        _ = fig2.update_layout(
             # yaxis_zeroline=True,
             title_text=title,
             xaxis_title_text="Actual focus depth $(mu m)$",
@@ -117,67 +146,68 @@ def plot_actual_versus_predicted(
     # ax.grid(True, linestyle=":")  # type: ignore
 
     # uncertainty ribbon, better than having tons of error bars
-    if plot_pred.zerr_train is None or plot_pred.zerr_test is None:
-        logger.warning("No error arrays supplied -> skipping uncertainty ribbon.")
-    else:
-        min_samples = 8  # minimum values in a bin
-        sigma_floor = 1.0  # micro meters, scale ought to vary data to data
-        q = 1  # how many sigma to show on plot, this is the width of the error band
-
-        z_bins = np.linspace(z_min, z_max, 50, dtype=np.float32)
-        centers = 0.5 * (
-            z_bins[:-1] + z_bins[1:]
-        )  # find the center of the bins, which is the value at which they appear
-        digit = (
-            np.digitize(z_train, z_bins) - 1
-        )  # find which bin each value falls into, range of 0-28
-
-        good_z_bins = validate_bins(centers, digit, min_samples, z_train_pred, sigma_floor)
-
-        # "unzips" the list of arrays into each subsequent value as a numpy array
-        # strict false to avoid raising a value error if arrays are different sizes
-        x_train_np, mu_train_np, sigma_train_np = (
-            np.asarray(v, dtype=np.float64) for v in zip(*good_z_bins, strict=False)
-        )
-
-        # chi squared statistic
-        chi2 = np.sum(((mu_train_np - x_train_np) / sigma_train_np) ** 2)  # chi^2 of train_z
-        dof = len(x_train_np) - 1  # set dof to the length of the number of measurements
-        chi2_red = chi2 / dof
-        # p value to measure if my data significantly deviates from expected
-        p_val = 1.0 - chi2_dist.cdf(chi2, dof)
-
-        logger.info(f"chi^2 / dof = {chi2:.1f} / {dof} -> chi^2_red = {chi2_red:.2f}")
-        logger.info(f"p-value  = {p_val:.3f}")
-
-        # measure the percent of values actually inside the standard deviation band
-        sigma_bins = np.full_like(
-            centers, np.nan
-        )  # initialize an array for SD bins, size of centers
-        for count, _, sig in good_z_bins:
-            # calculate the difference of actual/pred in a bin, take the minimum value
-            # at that index, record the sigma value
-            sigma_bins[np.argmin(np.abs(centers - count))] = sig
-
-        digit_val = np.digitize(z_val, z_bins) - 1  # digitize val values
-        sigma_val = sigma_bins[digit_val]  # get the SD of each bin of z_val values
-
-        # create a condition such that we only evaluate finite and non-negative standard deviations
-        sig_cond = np.isfinite(sigma_val) & (sigma_val > 0)
-        # number of hits: the count of predictions that differ from the actual less than q standard deviations
-        hits = np.abs(z_val_pred[sig_cond] - z_val[sig_cond]) < q * sigma_val[sig_cond]
-        hit_rate = hits.mean() * 100  # return as a percentage
-
-        logger.info(f"Validation MAE  : {np.abs(z_val_pred - z_val).mean():7.2f} µm")
-        logger.info(rf"% inside +-{q} sigma ribbon (val): {hit_rate:5.1f}%")
+    # if plot_info.zerr_train is None or plot_info.zerr_test is None:
+    #     logger.warning("No error arrays supplied -> skipping uncertainty ribbon.")
+    # else:
+    #     q = 1  # how many sigma to show on plot, this is the width of the error band
+    #
+    #     z_bins: Np1Array32 = np.linspace(z_min, z_max, 50, dtype=np.float32)
+    #     # find the center of the bins, which is the value at which they appear
+    #     centers: Np1Array64 = 0.5 * (z_bins[:-1] + z_bins[1:])
+    #     mu_train_np = centers.mean()
+    #     x_train_np = z_train
+    #     sigma_train_np = centers.std()
+    #     # find which bin each value falls into, range of 0-28
+    #     # digit = np.digitize(z_train, z_bins) - 1
+    #     #
+    #     # good_z_bins: list[tuple[float, float, float]] = validate_bins(
+    #     #     centers, digit, min_samples, z_train_pred, sigma_floor
+    #     # )
+    #     #
+    #     # # "unzips" the list of arrays into each subsequent value as a numpy array
+    #     # # strict false to avoid raising a value error if arrays are different sizes
+    #     # x_train_np, mu_train_np, sigma_train_np = (
+    #     #     np.asarray(v, dtype=np.float64) for v in zip(*good_z_bins, strict=False)
+    #     # )
+    #
+    #     # chi squared statistic
+    #     chi2 = np.sum(((mu_train_np - x_train_np) / sigma_train_np) ** 2)  # chi^2 of train_z
+    #     dof = len(x_train_np) - 1  # set dof to the length of the number of measurements
+    #     chi2_red = chi2 / dof
+    #     # p value to measure if my data significantly deviates from expected
+    #     p_val = 1.0 - chi2_dist.cdf(chi2, dof)
+    #
+    #     logger.info(f"chi^2 / dof = {chi2:.1f} / {dof} -> chi^2_red = {chi2_red:.2f}")
+    #     logger.info(f"p-value  = {p_val:.3f}")
+    #
+    #     # measure the percent of values actually inside the standard deviation band
+    #     sigma_bins = np.full_like(
+    #         centers, np.nan
+    #     )  # initialize an array for SD bins, size of centers
+    #     for count, _, sig in good_z_bins:
+    #         # calculate the difference of actual/pred in a bin, take the minimum value
+    #         # at that index, record the sigma value
+    #         sigma_bins[np.argmin(np.abs(centers - count))] = sig
+    #
+    #     digit_val = np.digitize(z_val, z_bins) - 1  # digitize val values
+    #     sigma_val = sigma_bins[digit_val]  # get the SD of each bin of z_val values
+    #
+    #     # create a condition such that we only evaluate finite and non-negative standard deviations
+    #     sig_cond = np.isfinite(sigma_val) & (sigma_val > 0)
+    #     # number of hits: the count of predictions that differ from the actual less than q standard deviations
+    #     hits = np.abs(z_val_pred[sig_cond] - z_val[sig_cond]) < q * sigma_val[sig_cond]
+    #     hit_rate = hits.mean() * 100  # return as a percentage
+    #
+    #     logger.info(f"Validation MAE  : {np.abs(z_val_pred - z_val).mean():7.2f} µm")
+    #     logger.info(rf"% inside +-{q} sigma ribbon (val): {hit_rate:5.1f}%")
 
     # NOTE: must create legend after all plots have been created
     # plt.tight_layout()
-    assert type(fig) is go.Figure
-    _save_show_plot(in_fig=fig, save_path=save_root, display=display, title=title)
+    assert type(fig2) is go.Figure
+    _save_show_plot(in_fig=fig2, path_to_plot=path_to_plot, display=plot_info.display, title=title)
 
 
-def plot_residual_vs_true(plot_info, title, savepath, display):
+def plot_residual_vs_true(plot_info, title, path_to_plot):
     """Plot residual vs true depth using Plotly."""
     res_m = plot_info.z_pred_m - plot_info.z_true_m
     n_bins = max(10, len(plot_info.z_true_m) // 50)
@@ -257,14 +287,13 @@ def plot_residual_vs_true(plot_info, title, savepath, display):
         hovermode="closest",
     )
 
-    _save_show_plot(in_fig=fig, save_path=savepath, display=display, title=title)
+    _save_show_plot(in_fig=fig, path_to_plot=path_to_plot, display=plot_info.display, title=title)
 
 
 def plot_violin_depth_bins(
     plot_info,
     title,
-    savepath,
-    display: DisplayType = DisplayType.SAVE,
+    path_to_plot,
 ):
     # sanity
     z_true_m = np.array(plot_info.z_true_m)
@@ -296,14 +325,13 @@ def plot_violin_depth_bins(
         hovermode="closest",
     )
 
-    _save_show_plot(in_fig=fig, save_path=savepath, display=display, title=title)
+    _save_show_plot(in_fig=fig, path_to_plot=path_to_plot, display=plot_info.display, title=title)
 
 
 def plot_hexbin_with_marginals(
     plot_info,
     title,
-    savepath,
-    display: DisplayType = DisplayType.SAVE,
+    path_to_plot,
 ):
     """Plot density of predictions of z."""
     # data
@@ -325,7 +353,7 @@ def plot_hexbin_with_marginals(
     )
     fig = px.density_heatmap(df, x="z true", y="z pred", marginal_x="histogram")
     assert type(fig) is go.Figure
-    _save_show_plot(in_fig=fig, save_path=savepath, display=display, title=title)
+    _save_show_plot(in_fig=fig, path_to_plot=path_to_plot, display=plot_info.display, title=title)
 
 
 def plot_amp_phase(
@@ -334,7 +362,7 @@ def plot_amp_phase(
     *,  # allows for parsing in truth values
     amp_true: npt.NDArray[Any] | None = None,
     phase_true: npt.NDArray[Any] | None = None,
-    savepath: str = "phase_amp.png",
+    path_to_plot: str = "phase_amp.png",
     display: DisplayType = DisplayType.SHOW,
 ):
     """Visualise amplitude & phase reconstruction.
@@ -406,4 +434,4 @@ def plot_amp_phase(
         ax.set_yticks([])
 
     plt.tight_layout()
-    _save_show_plot(in_fig=fig, save_path=savepath, display=display, title=title)
+    _save_show_plot(in_fig=fig, path_to_plot=path_to_plot, display=display, title=title)
