@@ -17,6 +17,7 @@ import rich  # noqa
 from pythonjsonlogger import jsonlogger
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.traceback import install
 
 _LOG_FILE: Final[Path] = Path("logs/my_app.log.jsonl")
 _LOG_LEVEL = "DEBUG"  # root level – override per logger if needed
@@ -51,9 +52,14 @@ file_handler = RotatingFileHandler(
 file_handler.setFormatter(json_fmt)
 file_handler.setLevel(logging.DEBUG)
 
+
 # Console formatter is handled inside RichHandler
+# setup rich_tracebacks
+_ = install()
 rich_handler = RichHandler(
     console=Console(stderr=True, log_time_format="%H:%M:%S"),
+    show_level=True,
+    show_time=True,
     tracebacks_word_wrap=False,
     rich_tracebacks=True,
     locals_max_length=1,
@@ -61,10 +67,8 @@ rich_handler = RichHandler(
     tracebacks_code_width=10,
     tracebacks_extra_lines=1,
     tracebacks_max_frames=1,
-    show_level=True,
-    show_time=True,
     tracebacks_show_locals=True,
-    tracebacks_suppress=["click", "typer"],
+    # tracebacks_suppress=["click", "typer"],
     show_path=True,
 )
 rich_handler.setLevel(logging.INFO)
