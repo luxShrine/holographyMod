@@ -33,6 +33,7 @@ dependencies = [
   "scikit-learn>=1.6.1",
   "scipy>=1.15.2",
   "seaborn>=0.13.2",
+  "statsmodels>=0.14.4",
   "timm>=1.0.15",
   "torch>=2.6",
   "torchoptics>=0.3.1",
@@ -91,6 +92,7 @@ ignore = [
   "TD002",  # Author in todo
   "TD003",  # Issue in todo
   "W291",   # Trailing whitespace
+  "W293",   # Line only has whitespace
 ]
 
 [tool.basedpyright]
