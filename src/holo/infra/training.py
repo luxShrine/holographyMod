@@ -89,7 +89,7 @@ def train_autofocus(a_config: AutoConfig) -> PlotPred:
         float(train_cfg.z_sig.magnitude) if a_config.analysis == AnalysisType.REG else None
     )
     # For class, train_cfg.evaluation_metric is base.bin_centers
-    bin_centers = train_cfg.evaluation_metric if a_config.analysis == AnalysisType.CLASS else None
+    bin_centers = holo_base_ds.bin_centers if a_config.analysis == AnalysisType.CLASS else None
 
     # -- Get & Save Training Data for Plotting ---------------------------------------------------
     # store for ease of use during debugging
@@ -133,7 +133,7 @@ def return_z(holo_base_ds, a_config, gather):
         holo_base_ds.bin_edges.tolist(),
         "plot",
         str(Path(a_config.out_dir) / Path("plot.png")),
-        "display",
+        "save",  # cannot serialize DisplayType to json
     )
 
 
@@ -561,14 +561,14 @@ def train_eval_epoch(
                             epoch_cfg.evaluation_metric, dtype=torch.float32
                         )
                         logger.debug(
-                            f"At {epochs / a_cfg.epoch_count} Val MAE: {metric_val:.9f} µm"
+                            f"At {epochs} / {a_cfg.epoch_count} Val MAE: {metric_val:.9f} µm"
                         )
                     else:
                         # using bin value
                         labels_tensor = torch.as_tensor(epoch_cfg.evaluation_metric)
                         # Ensure percent
                         logger.debug(
-                            f"At {epochs / a_cfg.epoch_count} Val Acc: {metric_val * 100:.2f} %"
+                            f"At {epochs} / {a_cfg.epoch_count} Val Acc: {metric_val * 100:.2f} %"
                         )
 
                     avg_loss_train = train_loss_epoch / train_total_samples
