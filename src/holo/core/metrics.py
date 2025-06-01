@@ -63,17 +63,17 @@ def gather_z_preds(
                 # pass in data to model
                 preds = model(imgs)
                 # convert back to physical units
-                if analysis == AnalysisType.REG:
+                if analysis.value == AnalysisType.REG.value:
                     if z_mu_phys is None or z_sig_phys is None:
                         raise ValueError(
                             "z_mu_phys and z_sig_phys required for regression de-normalization"
                         )
 
                     # bring predictions back to cpu
-                    preds_arr = preds.squeeze().cpu().numpy() * z_sig_phys + z_mu_phys
-                    labels_arr = labels.cpu().numpy() * z_sig_phys + z_mu_phys
+                    preds_phys_batch = preds.squeeze().cpu().numpy() * z_sig_phys + z_mu_phys
+                    true_phys_batch = labels.cpu().numpy() * z_sig_phys + z_mu_phys
 
-                elif analysis == AnalysisType.CLASS:
+                elif analysis.value == AnalysisType.CLASS.value:
                     if bin_centers_phys is None:
                         raise ValueError("bin_centers_phys required for classificaton conversion")
 
@@ -81,21 +81,25 @@ def gather_z_preds(
                     # the maximimum values of the input tensor across the selected
                     # dimension/axis. Here it grabs the indicies of the predictions,
                     # which ought to correspond to the integer bins in the label.
-                    preds_arr = preds.argmax(dim=1).unsqueeze(0).cpu().numpy()
-                    labels_arr = labels_device.unsqueeze(0).cpu().numpy()
+                    preds_arr_indices = preds.argmax(dim=1).cpu().numpy()
+                    labels_arr_indices = labels_device.cpu().numpy()
+                    preds_phys_batch = bin_centers_phys[preds_arr_indices]
+                    true_phys_batch = bin_centers_phys[labels_arr_indices]
+                else:
+                    raise Exception("Unknown analysis value")
 
                 if loader == t_loader:
-                    train_z_pred_list += list(preds_arr[:, 0])
-                    train_z_true_list += list(labels_arr[:, 0])
+                    train_z_pred_list.append(preds_phys_batch)
+                    train_z_true_list.append(true_phys_batch)
                 else:
-                    eval_z_pred_list += list(preds_arr[:, 0])
-                    eval_z_true_list += list(labels_arr[:, 0])
+                    eval_z_pred_list.append(preds_phys_batch)
+                    eval_z_true_list.append(true_phys_batch)
 
     # store each of these values
-    eval_z_pred_arr: Np1Array64 = np.array(eval_z_pred_list, dtype=np.float64)
-    eval_z_true_arr: Np1Array64 = np.array(eval_z_true_list, dtype=np.float64)
-    train_z_pred_arr: Np1Array64 = np.array(train_z_pred_list, dtype=np.float64)
-    train_z_true_arr: Np1Array64 = np.array(train_z_true_list, dtype=np.float64)
+    eval_z_pred_arr: Np1Array64 = np.concatenate(eval_z_pred_list, dtype=np.float64)
+    eval_z_true_arr: Np1Array64 = np.concatenate(eval_z_true_list, dtype=np.float64)
+    train_z_pred_arr: Np1Array64 = np.concatenate(train_z_pred_list, dtype=np.float64)
+    train_z_true_arr: Np1Array64 = np.concatenate(train_z_true_list, dtype=np.float64)
 
     return (eval_z_pred_arr, eval_z_true_arr, train_z_pred_arr, train_z_true_arr)
 
