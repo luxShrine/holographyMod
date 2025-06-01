@@ -1,7 +1,7 @@
 # TODO: change the documentation around display to propearly describe it <05-19-25, luxShrine >
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -55,156 +55,229 @@ def _save_show_plot(
         logger.error("Unkown plot type passed to save plot function.")
 
 
-def plot_actual_versus_predicted(plot_info: PlotPred, title, path_to_plot) -> None:
-    """Plot actual vs. predicted values for both training and testing sets for classification."""
-    # confusion matrix plot
+def plot_actual_versus_predicted(plot_info: PlotPred, title: str, path_to_plot: str) -> None:
+    """Plot actual vs. predicted values and a confusion matrix for classification."""
+    import plotly.figure_factory as ff
+    import polars as pl
+    from plotly.subplots import make_subplots
+    from polars import DataFrame
+    from scipy.stats import gaussian_kde
     from sklearn.metrics import confusion_matrix
 
-    z_val = np.array(plot_info.z_test, dtype=np.float64)
-    z_train = np.array(plot_info.z_train, dtype=np.float64)
-    z_val_pred = np.array(plot_info.z_test_pred, dtype=np.float64)
-    z_train_pred = np.array(plot_info.z_train_pred, dtype=np.float64)
+    z_val_phys = np.array(plot_info.z_test, dtype=np.float64)
+    z_train_phys = np.array(plot_info.z_train, dtype=np.float64)
+    z_val_pred_phys = np.array(plot_info.z_test_pred, dtype=np.float64)
+    z_train_pred_phys = np.array(plot_info.z_train_pred, dtype=np.float64)
+    z_val_pred_min = z_val_pred_phys.min()
+    z_train_pred_min = z_train_pred_phys.min()
+    data = {
+        "z_val_phys": z_val_phys,
+        "z_train_phys": z_train_phys,
+        "z_val_pred_phys": z_val_pred_phys,
+        "z_train_pred_phys": z_train_pred_phys,
+    }
+
+    # Convert to µm for plotting, concat creates null values automatically since
+    # prediction and evaluation arrays aren't the same size
+    df: DataFrame = pl.concat(
+        items=[pl.DataFrame({name: (val * 1e6)}) for name, val in data.items()],
+        how="horizontal",
+    )
+    # even if some values are null (due to above) it will not be passed into the
+    # plot as long as there are values in each bin
+    residual_val = pl.col("z_val_pred_phys") - pl.col("z_val_phys")
+    residual_train = pl.col("z_train_pred_phys") - pl.col("z_train_phys")
+    df: DataFrame = df.with_columns((residual_val).alias("residual_val"))
+    df: DataFrame = df.with_columns((residual_train).alias("residual_train"))
+    # libraries like scipy and numpy dont play nicely with null values,
+    # separate df for numerical manipulation
+    df_filled: DataFrame = df.fill_null(0)
+
+    # -- Confusion Matrix plot -------------------------------------------------------------------
+    # Ensure bin_edges is not None and is a numpy array for classification
+    if plot_info.bin_edges is None:
+        raise Exception("bin_edges not provided in PlotPred. Plotting failed.")
     bin_edges = np.array(plot_info.bin_edges, dtype=np.float64)
-    # check for errors to ensure can be plotted
-    assert z_val.shape == z_val_pred.shape, "z_val is not the same shape as z_val_pred"
-    assert z_train.shape == z_train_pred.shape, "z_train is not the same shape as z_train_pred"
     assert isinstance(bin_edges[0], np.float64), (
         f"bin_edges contains something other than np.float64, found {type(bin_edges[0])}"
     )
 
-    # Convert physical values back to bin indices
-    # Ensure bin_edges are sorted
-    y_true_indices = np.clip(np.digitize(z_train, bin_edges), 1, len(bin_edges) - 1) - 1
-    y_pred_indices = np.clip(np.digitize(z_train_pred, bin_edges), 1, len(bin_edges) - 1) - 1
+    # Convert physical values back to bin indices for the confusion matrix
+    # We'll use the validation set for the confusion matrix as a common practice
+    true_indices_val = np.clip(np.digitize(z_val_phys, bin_edges), 1, len(bin_edges) - 1) - 1
+    pred_indices_val = np.clip(np.digitize(z_val_pred_phys, bin_edges), 1, len(bin_edges) - 1) - 1
 
     num_classes = len(bin_edges) - 1
-    # class_labels = [f"Bin {i}" for i in range(num_classes)]
-    # Or use bin_centers for labels:
-    # bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
-    # class_labels = [f"{c:.2f}µm" for c in bin_centers]
 
-    cm = confusion_matrix(y_true_indices, y_pred_indices, labels=list(range(num_classes)))
+    # Class labels for the confusion matrix axes
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    # Convert to µm for readability if original units are meters
+    class_labels_um = [f"{c * 1e6:.1f}µm" for c in bin_centers]
 
-    # fig, ax = plt.subplots(figsize=(max(6, num_classes*0.5), max(5, num_classes*0.4)))
-    # ax.set_xlabel('Predicted Label')
-    # ax.set_ylabel('True Label')
+    cm = confusion_matrix(true_indices_val, pred_indices_val, labels=list(range(num_classes)))
 
-    confusion_matrix_plot = go.Heatmap(
+    # Create annotated heatmap for confusion matrix using Plotly Figure Factory
+    fig_cm = ff.create_annotated_heatmap(
         z=cm,
-        x=["Predicted Negative", "Predicted Positive"],
-        y=["Actual Negative", "Actual Positive"],
+        x=class_labels_um,
+        y=class_labels_um,
         colorscale="Blues",
+        showscale=True,  # Shows the color bar
+        reversescale=False,
     )
-    fig1 = go.Figure(data=confusion_matrix_plot)
-    fig1.update_layout(
-        title="Confusion Matrix", xaxis_title="Predicted Label", yaxis_title="True Label"
+    _ = fig_cm.update_layout(
+        title_text="Confusion Matrix (Validation Set)",
+        xaxis_title_text="Predicted Label (Physical Bin Center)",
+        yaxis_title_text="True Label (Physical Bin Center)",
+        xaxis={
+            "tickmode": "array",
+            "tickvals": list(range(num_classes)),
+            "ticktext": class_labels_um,
+            "side": "bottom",
+        },
+        yaxis={
+            "tickmode": "array",
+            "tickvals": list(range(num_classes)),
+            "ticktext": class_labels_um,
+            "autorange": "reversed",
+        },  # Reversed to match typical CM layout
     )
-    fig1.write_html(Path("confused.html"))
+    # Save or show the confusion matrix
+    cm_save_path = Path(path_to_plot).parent / (Path(path_to_plot).stem + "_confusion_matrix.html")
+    _save_show_plot(fig_cm, plot_info.display, "Confusion Matrix", cm_save_path.as_posix())
 
-    fig2: go.Figure = go.Figure()
+    # -- Scatter plot ----------------------------------------------------------------------------
 
-    # correct plot via matplotlib
-    # plt.scatter(eval_z_pred_arr, eval_z_true_arr, alpha=0.5, color="yellow", label="Validation")
-    # plt.scatter(train_z_pred_arr, train_z_true_arr, alpha=0.1, color="blue", label="Train")
-    # plt.legend()
-    # plt.xlabel("Predicted Value")
-    # plt.ylabel("True Value")
-    # plt.xlim(0, 100)
-    # plt.ylim(0, 100)
-    # plt.title("True vs Predicted Value")
-    # plt.savefig("plot.png")
-
-    # global limits
-    conc = np.concatenate(
-        [z_val_pred, z_val, z_train_pred, z_train]
-    )  # combine all values into one array
-    span = np.ptp(conc)  # returns range of values "peak to peak"
-    # create the limits of the plot so it pads the plotted line
-    cast("float", conc.min() - span * 1e-6)
-    cast("float", conc.max() + span * 1e-6)
-
-    # if my model was perfect it would match the known dataset values to the predicted values
-    # create an ideal line to measure against
-    # _ = fig.add_trace(go.Scatter(x=[z_min, z_max], y=[z_min, z_max], mode="lines", name="Ideal"))
-
-    # for the validation values, use a hexbin which shows the density of points in a given region of the plot
-
-    _ = fig2.add_trace(go.Scatter(x=z_train, y=z_train_pred, mode="markers", name="train"))
-    _ = fig2.add_trace(go.Scatter(x=z_val, y=z_val_pred, mode="markers", name="val"))
-
-    if title:
-        # x/y axis label, title, grid
-        _ = fig2.update_layout(
-            # yaxis_zeroline=True,
-            title_text=title,
-            xaxis_title_text="Actual focus depth $(mu m)$",
-            yaxis_title_text="Predicted focus depth $(mu m)$",
-            legend_title_text="Legend",
-            hovermode="closest",
-            # xaxis_range=[z_min, z_max],
+    # scipy estimates the probability density function of random points using
+    # Gaussian kernels. This is generated and then applied to the stacked
+    # arrays: vstack([N], [B]) -> [[N], [B]]. Outputing continious value to
+    # use for density
+    kde_val = gaussian_kde(
+        np.vstack(
+            [
+                df_filled["z_val_pred_phys"].to_numpy().clip(min=z_val_pred_min),
+                df_filled["residual_val"].to_numpy(),
+            ]
         )
-    # ax.grid(True, linestyle=":")  # type: ignore
+    )
+    kde_train = gaussian_kde(
+        np.vstack(
+            [
+                df_filled["z_train_pred_phys"].to_numpy().clip(min=z_train_pred_min),
+                df_filled["residual_train"].to_numpy(),
+            ]
+        )
+    )
+    density_val = kde_val(
+        np.vstack(
+            [
+                df_filled["z_val_pred_phys"].to_numpy().clip(min=z_val_pred_min),
+                df_filled["residual_val"].to_numpy(),
+            ]
+        )
+    )
+    density_train = kde_train(
+        np.vstack(
+            [
+                df_filled["z_train_pred_phys"].to_numpy().clip(min=z_train_pred_min),
+                df_filled["residual_train"].to_numpy(),
+            ]
+        )
+    )
 
-    # uncertainty ribbon, better than having tons of error bars
-    # if plot_info.zerr_train is None or plot_info.zerr_test is None:
-    #     logger.warning("No error arrays supplied -> skipping uncertainty ribbon.")
-    # else:
-    #     q = 1  # how many sigma to show on plot, this is the width of the error band
-    #
-    #     z_bins: Np1Array32 = np.linspace(z_min, z_max, 50, dtype=np.float32)
-    #     # find the center of the bins, which is the value at which they appear
-    #     centers: Np1Array64 = 0.5 * (z_bins[:-1] + z_bins[1:])
-    #     mu_train_np = centers.mean()
-    #     x_train_np = z_train
-    #     sigma_train_np = centers.std()
-    #     # find which bin each value falls into, range of 0-28
-    #     # digit = np.digitize(z_train, z_bins) - 1
-    #     #
-    #     # good_z_bins: list[tuple[float, float, float]] = validate_bins(
-    #     #     centers, digit, min_samples, z_train_pred, sigma_floor
-    #     # )
-    #     #
-    #     # # "unzips" the list of arrays into each subsequent value as a numpy array
-    #     # # strict false to avoid raising a value error if arrays are different sizes
-    #     # x_train_np, mu_train_np, sigma_train_np = (
-    #     #     np.asarray(v, dtype=np.float64) for v in zip(*good_z_bins, strict=False)
-    #     # )
-    #
-    #     # chi squared statistic
-    #     chi2 = np.sum(((mu_train_np - x_train_np) / sigma_train_np) ** 2)  # chi^2 of train_z
-    #     dof = len(x_train_np) - 1  # set dof to the length of the number of measurements
-    #     chi2_red = chi2 / dof
-    #     # p value to measure if my data significantly deviates from expected
-    #     p_val = 1.0 - chi2_dist.cdf(chi2, dof)
-    #
-    #     logger.info(f"chi^2 / dof = {chi2:.1f} / {dof} -> chi^2_red = {chi2_red:.2f}")
-    #     logger.info(f"p-value  = {p_val:.3f}")
-    #
-    #     # measure the percent of values actually inside the standard deviation band
-    #     sigma_bins = np.full_like(
-    #         centers, np.nan
-    #     )  # initialize an array for SD bins, size of centers
-    #     for count, _, sig in good_z_bins:
-    #         # calculate the difference of actual/pred in a bin, take the minimum value
-    #         # at that index, record the sigma value
-    #         sigma_bins[np.argmin(np.abs(centers - count))] = sig
-    #
-    #     digit_val = np.digitize(z_val, z_bins) - 1  # digitize val values
-    #     sigma_val = sigma_bins[digit_val]  # get the SD of each bin of z_val values
-    #
-    #     # create a condition such that we only evaluate finite and non-negative standard deviations
-    #     sig_cond = np.isfinite(sigma_val) & (sigma_val > 0)
-    #     # number of hits: the count of predictions that differ from the actual less than q standard deviations
-    #     hits = np.abs(z_val_pred[sig_cond] - z_val[sig_cond]) < q * sigma_val[sig_cond]
-    #     hit_rate = hits.mean() * 100  # return as a percentage
-    #
-    #     logger.info(f"Validation MAE  : {np.abs(z_val_pred - z_val).mean():7.2f} µm")
-    #     logger.info(rf"% inside +-{q} sigma ribbon (val): {hit_rate:5.1f}%")
+    # -- create (1×2) layout ---------------------------------------------------------------------
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        column_widths=[0.80, 0.20],  # 80 % to the scatter | 20 % to the histogram
+        shared_yaxes=True,  # axes line up
+        horizontal_spacing=0.04,
+    )
+    # -- main scatter coloured by density --------------------------------------------------------
+    # Use the non filled df as plotly will properly drop the null values
+    _ = fig.add_trace(
+        go.Scatter(
+            x=df["z_val_pred_phys"].to_numpy(),
+            y=df["residual_val"].to_numpy(),
+            mode="markers",
+            marker={
+                "color": density_val,  # continuous array
+                "colorscale": "burg",
+                "showscale": True,
+                "colorbar": {"title": "val density", "x": 1},  # separate the two scales
+                "size": 9,
+                "opacity": 0.9,
+            },
+            name="Validation",  # legend text
+            legendgroup="VAL",  # groups both traces
+            showlegend=True,  # visible item in legend
+        ),
+        row=1,
+        col=1,
+    )
+    _ = fig.add_trace(
+        go.Scatter(
+            x=df["z_train_pred_phys"].to_numpy(),
+            y=df["residual_train"].to_numpy(),
+            mode="markers",
+            marker={
+                "color": density_train,
+                "colorscale": "oryel",
+                "showscale": True,
+                "colorbar": {"title": "train density", "x": 1.1},
+                "size": 9,
+                "opacity": 0.3,
+            },
+            name="Train",
+            legendgroup="TRAIN",
+            showlegend=True,
+        ),
+        row=1,
+        col=1,
+    )
 
-    # NOTE: must create legend after all plots have been created
-    # plt.tight_layout()
-    assert type(fig2) is go.Figure
-    _save_show_plot(in_fig=fig2, path_to_plot=path_to_plot, display=plot_info.display, title=title)
+    # -- add the marginal histogram (horizontal for y-axis) --------------------------------------
+    _ = fig.add_trace(
+        go.Histogram(
+            y=df["residual_val"],
+            marker_color="rgba(68,1,84,0.7)",
+            name="Validation",
+            legendgroup="VAL",  # same group -> toggles together
+            showlegend=False,  # no second item
+            opacity=0.8,
+        ),
+        row=1,
+        col=2,
+    )
+
+    _ = fig.add_trace(
+        go.Histogram(
+            y=df["residual_train"],
+            marker_color="rgba(255,183,76,0.7)",
+            name="Train",
+            legendgroup="TRAIN",
+            showlegend=False,
+            opacity=0.8,
+        ),
+        row=1,
+        col=2,
+    )
+
+    # --Finish ----------------------------------------------------------------------------------
+    # Scatter
+    _ = fig.update_xaxes(title="Focus Depth (µm)", row=1, col=1)
+    _ = fig.update_yaxes(title="Residual (µm)", row=1, col=1)
+    # Histogram region
+    _ = fig.update_xaxes(showticklabels=True, row=1, col=2)
+
+    _ = fig.update_layout(
+        # template="plotly_white",
+        title_text=title,
+        legend_title_text="Legend",
+        hovermode="closest",
+        legend={"yanchor": "top", "y": 0.99, "xanchor": "left", "x": 0.01},
+    )
+    _save_show_plot(fig, plot_info.display, title, path_to_plot)
 
 
 def plot_residual_vs_true(plot_info, title, path_to_plot):
