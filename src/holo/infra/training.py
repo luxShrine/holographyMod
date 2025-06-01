@@ -556,6 +556,9 @@ def train_eval_epoch(
                     else:
                         metric_val = abs_err_sum / total_samples_for_metric
 
+                    avg_loss_train = train_loss_epoch / train_total_samples
+                    avg_loss_val = loss_sum_val / total_samples_for_loss
+
                     if a_cfg.analysis == AnalysisType.REG:
                         labels_tensor = torch.as_tensor(
                             epoch_cfg.evaluation_metric, dtype=torch.float32
@@ -570,9 +573,6 @@ def train_eval_epoch(
                         logger.debug(
                             f"At {epochs} / {a_cfg.epoch_count} Val Acc: {metric_val * 100:.2f} %"
                         )
-
-                    avg_loss_train = train_loss_epoch / train_total_samples
-                    avg_loss_val = loss_sum_val / total_samples_for_loss
 
                     # Save latest model
                     torch.save(
