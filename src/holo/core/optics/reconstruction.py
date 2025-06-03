@@ -1,12 +1,16 @@
+from typing import TYPE_CHECKING
+
 import numpy as np
 import torch
 from PIL import Image
-from PIL.Image import Image as ImageType
 from torchvision import transforms
 
-import holo.infra.training_setup as ts
-import holo.infra.util.reason_checks as rc
+import holo.infra.training as ts
 from holo.infra.util.image_processing import crop_max_square
+from holo.infra.util.types import Np1Array32
+
+if TYPE_CHECKING:
+    from PIL.Image import Image as ImageType
 
 __all__ = ["recon_inline", "torch_recon"]
 
@@ -16,7 +20,7 @@ def torch_recon(
     wavelength: float,
     ckpt_file: str,
     crop_size: int = 512,
-    z: float = 300e-6,  #  TODO: implement both predictions, maybe allow choosing
+    z: float = 300e-6,
     backbone: str = "efficientnet_b4",
     dx: float = 3.8e-6,
 ):
@@ -84,7 +88,7 @@ def torch_recon(
         # continuous estimate
         # z_expect = (probs * bin_centers).sum(1)  # ⟨z⟩ = Σ p_i z_i
 
-    # TODO: why float32?
+    # torch expects float32
     holo_gray = np.asarray(crop_max_square(pil_image).convert("L"), np.float32) / 255.0
     amp, phase = recon_inline(holo_gray, wavelength=wavelength, z=float(z_expect) * 1e-3, px=dx)
 
@@ -92,15 +96,8 @@ def torch_recon(
     return hologram, amp, phase
 
 
-# the transform to find the field
-# E = h(x,y) * G(p,q) | p= x/(lambda z), q = y/(lambda z)
-
-# Fourier Transform method of solving Fresnel Diffraction Integral
-# G(p,q) = F(g(x,y)) = iint_{-inf}^{inf} g(x,y) exp(-i2 \pi (px+qy)) dx dy
-
-
 def recon_inline(intensity: Np1Array32, wavelength: float, z: float, px: float):
-    """Use Fourier transform method to return reconstructed amplitdude and phase of image.
+    r"""Use Fourier transform method to return reconstructed amplitdude and phase of image.
 
     Args:
         intensity: type and description.
@@ -110,6 +107,12 @@ def recon_inline(intensity: Np1Array32, wavelength: float, z: float, px: float):
 
     Returns:
         Phase and amplitude of reconstructed image.
+
+    Detail:
+        The transform to find the field
+        E = h(x,y) * G(p,q) | p= x/(lambda z), q = y/(lambda z)
+        Fourier Transform method of solving Fresnel Diffraction Integral
+        G(p,q) = F(g(x,y)) = iint_{-inf}^{inf} g(x,y) exp(-i2 \pi (px+qy)) dx dy
 
     """
     # image captures just the intensity of the object, take as complex sqrt since it is a 2D wave
