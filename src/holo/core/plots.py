@@ -1,4 +1,3 @@
-# TODO: change the documentation around display to propearly describe it <05-19-25, luxShrine >
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -11,20 +10,23 @@ import plotly.graph_objects as go
 import polars as pl
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
+from PIL import Image
 from rich.progress import track
 
-from holo.core.metrics import wrap_phase
+from holo.core.metrics import error_metric, wrap_phase
+from holo.core.optics.reconstruction import torch_recon
 from holo.infra.dataclasses import PlotPred
+from holo.infra.util.image_processing import crop_max_square, norm
 from holo.infra.util.paths import static_root
 from holo.infra.util.types import DisplayType
 
 if TYPE_CHECKING:
     from matplotlib.image import AxesImage
+    from PIL.Image import Image as ImageType
 
-logger = logging.getLogger(__name__)  # __name__ is a common choice
+logger = logging.getLogger(__name__)
 
 
-# TODO: change the show flag to be comething like mode = "save","show","both" <05-18-25>
 def _save_show_plot(
     in_fig: Figure | go.Figure,
     display: DisplayType,
@@ -430,8 +432,13 @@ def plot_hexbin_with_marginals(
 
 
 def plot_amp_phase(
-    amp_recon: npt.NDArray[Any],
-    phase_recon: npt.NDArray[Any],
+    img_file_path,
+    wavelength,
+    ckpt_file,
+    crop_size,
+    z,
+    backbone,
+    dx,
     *,  # allows for parsing in truth values
     amp_true: npt.NDArray[Any] | None = None,
     phase_true: npt.NDArray[Any] | None = None,
@@ -449,6 +456,18 @@ def plot_amp_phase(
 
     """
     title = "amp phase"
+    amp_recon: npt.NDArray[Any]
+    phase_recon: npt.NDArray[Any]
+
+    image: ImageType = Image.open(img_file_path).convert("RGB")
+    holo_org = np.array(crop_max_square(image))  # crop, and convert to array
+    recon, amp_recon, phase_recon = torch_recon(
+        img_file_path, wavelength, str(ckpt_file), crop_size, z, backbone, dx
+    )
+    n_org = norm(holo_org)
+    n_recon = norm(recon)
+    nrmsd, psnr = error_metric(n_org, n_recon, 255)
+    logger.info(f"the psnr is {psnr} with nrmsd: {nrmsd}")
 
     # if ground truth is provided
     if amp_true is not None and phase_true is not None:

@@ -2,13 +2,12 @@ import logging
 from pathlib import Path
 
 import click
-import numpy as np
 
 # import typer
 from holo.infra.dataclasses import PlotPred, load_obj, save_obj
 from holo.infra.log import init_logging
-from holo.infra.util.image_processing import build_metadata_csv, crop_max_square, norm
-from holo.infra.util.paths import MW_data, static_root
+from holo.infra.util.image_processing import build_metadata_csv
+from holo.infra.util.paths import MW_data, path_check, static_root
 from holo.infra.util.types import AnalysisType, DisplayType, UserDevice
 
 # Must be called before anything logs
@@ -21,19 +20,6 @@ DEF_IMG_FILE_PATH = (MW_data() / "510" / "10_Phase_USAF" / "z10" / "10.jpg").as_
 @click.group()
 def cli():
     pass
-
-
-# TODO: these can be moved to a util function <05-19-25, luxShrine>
-def path_check(**kwargs: Path):
-    """Ensure all paths passed in exist."""
-    logger = logging.getLogger(__name__)
-    for variable, path_to_check in kwargs:
-        try:
-            assert isinstance(path_to_check, Path), f"{path_to_check} is not a path."
-            _ = path_to_check.exists()
-        except Exception as e:
-            logger.error(f"{variable} not found/processed at {path_to_check}")
-            raise e
 
 
 @cli.command()
@@ -131,13 +117,12 @@ def plot_train(
 
     plot_info = load_obj()[0]
     assert isinstance(plot_info, PlotPred), f"plot_info is not PlotPred, found {type(plot_info)}"
-    logger.info(f"Plotting function with option: {display}")
     # update plot obj with desired values
+    logger.info(f"Plotting function with option: {display}")
     s_root = static_root().as_posix()
     plot_info.display = display
 
-    # TODO: add method for choosing plot based on regression or not automatically
-    # plot info varies from plot to plot
+    # TODO: automatically get analysis type
     if analysis:
         plots.plot_actual_versus_predicted(
             plot_info,
@@ -189,6 +174,8 @@ def plot_train(
 
 @cli.command()
 @click.argument("img_file_path")
+@click.option("--amp_true", default=None, help="True amplitude")
+@click.option("--phase_true", default=None, help="True Phase")
 @click.option(
     "--model_path",
     default="best_model.pth",
@@ -201,6 +188,11 @@ def plot_train(
 )
 @click.option("--z", default=20e-3, help="Distance of measurement (m)")
 @click.option("--dx", default=1e-6, help="Size of image px (m)")
+@click.option(
+    "--display",
+    default=DisplayType.SAVE,
+    help="Show, Save or do both for resulting phase and amplitude images",
+)
 def reconstruction(
     img_file_path: str,
     model_path: str,
@@ -209,11 +201,12 @@ def reconstruction(
     wavelength: float,
     z: float,
     dx: float,
+    display: DisplayType,
+    amp_true: None | float,
+    phase_true: None | float,
 ):
     """Perform reconstruction on an hologram."""
-    import holo.core.optics.reconstruction as rec
     import holo.core.plots as plots  # performance reasons, import locally in function
-    from holo.core.metrics import error_metric
 
     logger = logging.getLogger(__name__)
 
@@ -221,20 +214,20 @@ def reconstruction(
 
     ckpt_file = Path("checkpoints") / model_path
     path_check(checkpoint_file=ckpt_file, img_file_path=Path(img_file_path))
-    pil_image = Image.open(img_file_path).convert("RGB")
-    recon, amp, phase = rec.torch_recon(
-        img_file_path, wavelength, str(ckpt_file), crop_size, z, backbone, dx
+
+    # perform reconstruction
+    plots.plot_amp_phase(
+        amp_true,
+        phase_true,
+        backbone,
+        crop_size,
+        ckpt_file,
+        display,
+        dx,
+        img_file_path,
+        wavelength,
+        z,
     )
-
-    # normalize both images for comparison
-    # TODO: move these numpy/function calls elsewhere
-    holo_org = np.array(crop_max_square(pil_image))  # crop, and convert to array
-    n_org = norm(holo_org)
-    n_recon = norm(recon)
-    nrmsd, psnr = error_metric(n_org, n_recon, 255)
-    plots.plot_amp_phase(amp, phase)
-
-    logger.info(f"the psnr is {psnr} with nrmsd: {nrmsd}")
 
 
 @cli.command()
