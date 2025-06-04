@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 import numpy as np
 import numpy.typing as npt
@@ -87,7 +87,8 @@ class HologramFocusDataset(Dataset[tuple[ImageType, np.float64]]):
 
             self.bin_centers: Np1Array64 = 0.5 * (self.bin_edges[:-1] + self.bin_edges[1:])
             logger.info(
-                f"Created {self.num_classes} bins for classification with centers: {self.bin_centers}"
+                f"Created {self.num_classes} bins for classification with "
+                + f"centers: {self.bin_centers}"
             )
 
         # bins ought to wide enough to be populated, but not too wide as to loose meaning
@@ -108,9 +109,12 @@ class HologramFocusDataset(Dataset[tuple[ImageType, np.float64]]):
         # self.z_bins: npt.NDArray[np.int32] = np.digitize(self.z_m, bins)
 
     def __len__(self) -> int:
+        """Return the lengh of entries in dataframe."""
         return len(self.records)
 
-    def __getitem__(self, idx: int) -> tuple[ImageType, np.float64]:  # Return Quantities
+    @override
+    def __getitem__(self, idx: int) -> tuple[ImageType, np.float64]:
+        """Return image and z depth value."""
         # ensure image is read properly
         try:
             img: ImageType = Image.open(self.paths[idx]).convert("RGB")
