@@ -12,18 +12,18 @@ from torch.utils.data import Dataset
 
 import holo.infra.util.paths as paths
 from holo.infra.util.image_processing import correct_data_csv
-from holo.infra.util.types import Q_, AnalysisType, Np1Array32, Np1Array64
+from holo.infra.util.types import AnalysisType, Np1Array32, Np1Array64
 
 if TYPE_CHECKING:
     import polars as pl
-    from torch import Tensor
 
 
 logger = logging.getLogger(__name__)
 HOLO_DEF = paths.MW_data()
 
 
-class HologramFocusDataset(Dataset[tuple[ImageType, Q_, Q_, Np1Array32]]):
+# TODO: transform section not needed
+class HologramFocusDataset(Dataset[tuple[ImageType, np.float64]]):
     """Store dataset information relevant to reconstruction."""
 
     def __init__(
@@ -110,9 +110,7 @@ class HologramFocusDataset(Dataset[tuple[ImageType, Q_, Q_, Np1Array32]]):
     def __len__(self) -> int:
         return len(self.records)
 
-    def __getitem__(
-        self, idx: int
-    ) -> tuple[ImageType | Tensor, np.float64 | Tensor]:  # Return Quantities
+    def __getitem__(self, idx: int) -> tuple[ImageType, np.float64]:  # Return Quantities
         # ensure image is read properly
         try:
             img: ImageType = Image.open(self.paths[idx]).convert("RGB")
@@ -121,12 +119,6 @@ class HologramFocusDataset(Dataset[tuple[ImageType, Q_, Q_, Np1Array32]]):
             raise
         # Continuous if regression, bins if classification
         label = self.z_m[idx] if self.mode == AnalysisType.REG else self.z_bins[idx]
-
-        # if transform is passed, provide the transformed image rather than raw
-        if self.transform:
-            img = self.transform(img)
-        if self.target_transform:
-            label = self.target_transform(label)
 
         # Return quantities for clarity
         return (img, label)
