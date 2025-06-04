@@ -155,8 +155,6 @@ def return_z(holo_base_ds: HologramFocusDataset, a_config: AutoConfig, gather: G
 
 
 def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
-    # dataset needs to be iterable in terms of pytorch, dataloader does such
-
     num_labels: int = len(base)
     eval_len = int(a_cfg.val_split * num_labels)
     train_len = num_labels - eval_len
@@ -250,6 +248,7 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
     )
     logger.debug("transformed datasets created")
 
+    # dataset needs to be iterable in terms of pytorch, dataloader does such
     eval_dl: DataLoader[tuple[ImageType, np.float64]] = DataLoader(
         tf_eval_ds,
         batch_size=a_cfg.batch_size,
