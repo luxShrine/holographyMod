@@ -7,7 +7,8 @@ import numpy.typing as npt
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from line_profiler import profile
+
+# from line_profiler import profile
 from PIL.Image import Image as ImageType
 from rich.progress import (
     BarColumn,
@@ -61,7 +62,9 @@ class TransformedDataset(Dataset[tuple[ImageType, np.float64]]):
 def train_autofocus(a_config: AutoConfig) -> PlotPred:
     # load data
     holo_base_ds = HologramFocusDataset(
-        a_config.analysis, a_config.meta_csv_name, a_config.num_classes
+        mode=a_config.analysis,
+        num_classes=a_config.num_classes,
+        csv_file_strpath=a_config.meta_csv_strpath,
     )
     test_base(holo_base_ds)
 
@@ -106,41 +109,34 @@ def train_autofocus(a_config: AutoConfig) -> PlotPred:
         z_mu_phys=z_mu,
         z_sig_phys=z_sig,
     )
-    # Save the dictionary to a JSON file
-    # gather_json_strpath = Path("gather_z.json").as_posix()
-    # gather_pickle_strpath = Path("gather_z.pkl").as_posix()
-    # with open(gather_pickle_strpath, "wb") as f:
-    #     pickle.dump(gather_z_obj, f)
-    # save_obj(gather_z_obj, gather_json_strpath)
+    # TODO: Save the object to json/pickle/torch file to have access to
+    # predictions for debugging/inspection purposes.
     return return_z(holo_base_ds, a_config, gather_z_obj)
 
 
 def return_z(holo_base_ds: HologramFocusDataset, a_config: AutoConfig, gather: GatherZ):
-    # gather_pickle_strpath = Path("gather_z.pkl").as_posix()
-    # with open(gather_pickle_strpath, "rb") as f:
-    #     gather = pickle.load(f)
-    # gather = load_obj("gather_z.json", "GatherZ")[0]
     assert isinstance(gather, GatherZ), f"gather is not GatherZ, found {type(gather)}"
     train_z_pred, train_z_true, val_z_pred, val_z_true = gather_z_preds(**gather.__dict__)
     # TODO: get something more robust
     # Actual vs Predicted diff
     train_err: Np1Array64 = np.abs(train_z_pred - train_z_true)
     val_err: Np1Array64 = np.abs(val_z_pred - val_z_true)
+
+    # create list from numpy arrays, cast them so typechecker knows contents
     return PlotPred(
-        val_z_pred.tolist(),
-        val_z_true.tolist(),
-        train_z_pred.tolist(),
-        train_z_true.tolist(),
-        train_err.tolist(),
-        val_err.tolist(),
-        holo_base_ds.bin_edges.tolist(),
+        cast("list[np.float64]", val_z_pred.tolist()),
+        cast("list[np.float64]", val_z_true.tolist()),
+        cast("list[np.float64]", train_z_pred.tolist()),
+        cast("list[np.float64]", train_z_true.tolist()),
+        cast("list[np.float64]", train_err.tolist()),
+        cast("list[np.float64]", val_err.tolist()),
+        cast("list[np.float64]", holo_base_ds.bin_edges.tolist()),
         "plot",
         str(Path(a_config.out_dir) / Path("plot.png")),
         "save",  # cannot serialize DisplayType to json
     )
 
 
-@profile
 def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
     # dataset needs to be iterable in terms of pytorch, dataloader does such
 
@@ -190,12 +186,13 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
         # Calculate mu and sigma from the training subset's physical z-values
         # Need to access original z_m from base dataset via indices of train_subset
         train_z_physical_subset: Np1Array64 = base.z_m[train_subset.indices]
-        core_z_mu_val: np.float64 = train_z_physical_subset.mean()
-        core_z_sig_val: np.float64 = train_z_physical_subset.std()
+        core_z_mu_val: float = train_z_physical_subset.mean()
+        core_z_sig_val: float = train_z_physical_subset.std()
         if core_z_sig_val < 1e-6:  # Avoid division by zero or very small std
             core_z_sig_val = 1.0
             logger.warning(
-                f"Training subset z_m standard deviation is near zero. Setting to {core_z_sig_val} for normalization."
+                "Training subset z_m standard deviation is near zero."
+                + f"Setting to {core_z_sig_val} for normalization."
             )
 
         core_z_mu = Q_(core_z_mu_val, u.m)
@@ -321,7 +318,7 @@ def _create_model(
         raise Exception(f"Could not create model specified: {backbone_name}")
     logger.info(
         f"Model '{backbone_name}' configured with {num_model_outputs} output "
-        f"features for {analysis_type.value} analysis."
+        + f"features for {analysis_type.value} analysis."
     )
     return model
 
@@ -362,10 +359,10 @@ def test_training_config(t_cfg: CoreTrainer, a_cfg: AutoConfig) -> None:
     # TODO: within expected range, type
     # t_cfg.z_sig
     # t_cfg.z_mu
+    # WARN: doesn't render in console correctly, interupts rich progress bar
     logger.info("[black on green]--- Training Config Validated ---", extra={"markup": True})
 
 
-@profile
 def train_eval_epoch(
     epoch_cfg: CoreTrainer, a_cfg: AutoConfig, best_val_metric: float
 ) -> tuple[float, float, float, float]:
@@ -377,7 +374,7 @@ def train_eval_epoch(
     """
     _ = Path(a_cfg.out_dir).mkdir(exist_ok=True)
     path_to_checkpoint: Path = Path(a_cfg.out_dir) / Path("latest_checkpoint.pth")
-    _path_to_model: Path = Path(a_cfg.out_dir) / Path("best_model.pth")
+    path_to_model: Path = Path(a_cfg.out_dir) / Path("best_model.pth")
     progress_bar = setup_rich_progress(a_cfg.analysis)
 
     _ = progress_bar.add_task(
@@ -423,6 +420,43 @@ def train_eval_epoch(
                         )
                         avg_loss_val = loss_sum_val / total_samples_for_loss
 
+            save_best_model_flag = False
+            assert isinstance(metric_val, float)
+            if a_cfg.analysis == AnalysisType.REG:
+                # Lower MAE is better
+                logger.debug(f"At {epoch} / {a_cfg.epoch_count} Val Acc: {metric_val * 100:.2f} %")
+
+                if metric_val < best_val_metric:
+                    save_best_model_flag = True
+            else:
+                # Higher Accuracy is better
+                logger.debug(f"At {epoch} / {a_cfg.epoch_count} Val MAE: {metric_val:.9f} µm")
+
+                if metric_val > best_val_metric:
+                    best_val_metric = metric_val
+                    save_best_model_flag = True
+
+            # Save best model, if metric is better
+            if save_best_model_flag:
+                # convert to form of 5 numbers, in scientific notation
+                evaluation_sci_notation: str = f"{best_val_metric:5e}"
+                # create file with name that is unique to evaluation
+                best_model_name: str = (
+                    path_to_model.name.removesuffix(".pth") + evaluation_sci_notation + ".pth"
+                )
+                path_to_model_detail: Path = path_to_model.parent / Path(best_model_name)
+                _ = torch.save(
+                    {
+                        "epoch": epoch,
+                        "model_state_dict": epoch_cfg.model.state_dict(),
+                        "labels": labels_tensor,
+                        "bin_centers": getattr(epoch_cfg.train_loader, "bin_centers", None),
+                        "num_bins": a_cfg.num_classes,
+                        "val_metric": best_val_metric,
+                    },
+                    path_to_model_detail,
+                )
+
             # Save latest model, after going through both loaders
             _ = torch.save(
                 {
@@ -439,7 +473,6 @@ def train_eval_epoch(
                 path_to_checkpoint,
             )
 
-    assert isinstance(metric_val, float)
     return avg_loss_train, avg_loss_val, metric_val, best_val_metric
 
 
