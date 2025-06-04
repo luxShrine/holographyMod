@@ -1,7 +1,9 @@
 import logging
 from pathlib import Path
+from typing import Any
 
 import click
+import numpy.typing as npt
 
 # import typer
 from holo.infra.dataclasses import PlotPred, load_obj, save_obj
@@ -202,8 +204,8 @@ def reconstruction(
     z: float,
     dx: float,
     display: DisplayType,
-    amp_true: None | float,
-    phase_true: None | float,
+    amp_true: None | npt.NDArray[Any],
+    phase_true: None | npt.NDArray[Any],
 ):
     """Perform reconstruction on an hologram."""
     import holo.core.plots as plots  # performance reasons, import locally in function
@@ -217,16 +219,16 @@ def reconstruction(
 
     # perform reconstruction
     plots.plot_amp_phase(
-        amp_true,
-        phase_true,
-        backbone,
-        crop_size,
-        ckpt_file,
-        display,
-        dx,
-        img_file_path,
-        wavelength,
-        z,
+        backbone=backbone,
+        crop_size=crop_size,
+        ckpt_file=ckpt_file,
+        display=display,
+        dx=dx,
+        img_file_path=img_file_path,
+        wavelength=wavelength,
+        z=z,
+        amp_true=amp_true,
+        phase_true=phase_true,
     )
 
 
