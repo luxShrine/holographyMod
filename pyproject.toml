@@ -93,6 +93,7 @@ ignore = [
   "TD003",  # Issue in todo
   "W291",   # Trailing whitespace
   "W293",   # Line only has whitespace
+  "ISC003", # Implicit string concatenation
 ]
 
 [tool.basedpyright]
@@ -104,7 +105,7 @@ allowedUntypedLibraries = [
   # "plotly.graph_objects" 
 ]
 reportMissingTypeStubs = false
-# exclude = [ "src/tex", "src/static", "src/data", "**/__pycache__" ]
+exclude = [ "src/tex", "src/static", "logs/", "src/data", "**/__pycache__" ]
 include = [ "src/holo" ]
 reportExplicitAny = "none"
 reportCallInDefaultInitializer = "none"
