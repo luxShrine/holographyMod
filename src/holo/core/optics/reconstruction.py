@@ -1,12 +1,16 @@
+from typing import TYPE_CHECKING
+
 import numpy as np
-import numpy.typing as npt
 import torch
 from PIL import Image
-from PIL.Image import Image as ImageType
 from torchvision import transforms
 
-import holo.train.epoch_helper as eh
-from holo.util.crop import crop_max_square
+import holo.infra.training as ts
+from holo.infra.util.image_processing import crop_max_square
+from holo.infra.util.types import Np1Array32
+
+if TYPE_CHECKING:
+    from PIL.Image import Image as ImageType
 
 __all__ = ["recon_inline", "torch_recon"]
 
@@ -16,7 +20,7 @@ def torch_recon(
     wavelength: float,
     ckpt_file: str,
     crop_size: int = 512,
-    z: float = 300e-6,  #  TODO: implement both predictions, maybe allow choosing
+    z: float = 300e-6,
     backbone: str = "efficientnet_b4",
     dx: float = 3.8e-6,
 ):
@@ -51,10 +55,10 @@ def torch_recon(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     ## WARN: This is iffy
-    ckpt = torch.load(ckpt_file, map_location=device, weights_only=False)  # type: ignore
+    ckpt = torch.load(ckpt_file, map_location=device, weights_only=False)
     bin_centers = ckpt["bin_centers"]
 
-    model = eh.get_model(ckpt["num_bins"], backbone).to(device)
+    model = ts.get_model(ckpt["num_bins"], backbone).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
 
@@ -68,7 +72,8 @@ def torch_recon(
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
-    x = preprocess(pil_image_crop).unsqueeze(0).to(device)  # shape [1,C,H,W]# type: ignore
+    # shape [1, C, H, W]
+    x = preprocess(pil_image_crop).unsqueeze(0).to(device)
 
     # prediction
     with torch.no_grad():
@@ -83,7 +88,7 @@ def torch_recon(
         # continuous estimate
         # z_expect = (probs * bin_centers).sum(1)  # ⟨z⟩ = Σ p_i z_i
 
-    # TODO: why float32?
+    # torch expects float32
     holo_gray = np.asarray(crop_max_square(pil_image).convert("L"), np.float32) / 255.0
     amp, phase = recon_inline(holo_gray, wavelength=wavelength, z=float(z_expect) * 1e-3, px=dx)
 
@@ -91,18 +96,8 @@ def torch_recon(
     return hologram, amp, phase
 
 
-# the transform to find the field
-# E = h(x,y) * G(p,q) | p= x/(lambda z), q = y/(lambda z)
-
-# Fourier Transform method of solving Fresnel Diffraction Integral
-# G(p,q) = F(g(x,y)) = iint_{-inf}^{inf} g(x,y) exp(-i2 \pi (px+qy)) dx dy
-
-# TODO: what is a fast-ft? <04-16-25>
-# TODO: explain the process of how to each step works mathematically
-
-
-def recon_inline(intensity: npt.NDArray[np.float32], wavelength: float, z: float, px: float):
-    """Use Fourier transform method to return reconstructed amplitdude and phase of image.
+def recon_inline(intensity: Np1Array32, wavelength: float, z: float, px: float):
+    r"""Use Fourier transform method to return reconstructed amplitdude and phase of image.
 
     Args:
         intensity: type and description.
@@ -112,6 +107,12 @@ def recon_inline(intensity: npt.NDArray[np.float32], wavelength: float, z: float
 
     Returns:
         Phase and amplitude of reconstructed image.
+
+    Detail:
+        The transform to find the field
+        E = h(x,y) * G(p,q) | p= x/(lambda z), q = y/(lambda z)
+        Fourier Transform method of solving Fresnel Diffraction Integral
+        G(p,q) = F(g(x,y)) = iint_{-inf}^{inf} g(x,y) exp(-i2 \pi (px+qy)) dx dy
 
     """
     # image captures just the intensity of the object, take as complex sqrt since it is a 2D wave

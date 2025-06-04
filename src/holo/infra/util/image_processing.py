@@ -1,11 +1,41 @@
+# pyright: basic
 import logging
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 import polars as pl
-from PIL import Image
-from PIL import UnidentifiedImageError
+from numpy.typing import NDArray
+from PIL import Image, UnidentifiedImageError
+from PIL.Image import Image as ImageType
 
-from holo.util.log import logger
+logger = logging.getLogger(__name__)
+
+
+def crop_center(pil_img: ImageType, crop_width: int, crop_height: int) -> ImageType:
+    """Crop provided image into around its center."""
+    img_width, img_height = pil_img.size
+    return pil_img.crop(
+        (
+            (img_width - crop_width) // 2,
+            (img_height - crop_height) // 2,
+            (img_width + crop_width) // 2,
+            (img_height + crop_height) // 2,
+        )
+    )
+
+
+def crop_max_square(pil_img: ImageType) -> ImageType:
+    """Find the dimensions of image, crop to the largest square around its center."""
+    return crop_center(pil_img, min(pil_img.size), min(pil_img.size))
+
+
+def norm(data: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Normalize input numpy array."""
+    max: np.float64 = np.max(data, keepdims=True)
+    min: np.float64 = np.min(data, keepdims=True)
+    normed_array = (data - min) / (max - min)
+    return normed_array
 
 
 # check image is not corrupted
@@ -18,11 +48,11 @@ def _is_valid(path: str) -> bool:
         return False
 
 
-def correct_data_csv(path_csv_str: Path, dataset_dir: Path):
+def correct_data_csv(csv_path: Path, dataset_path: Path):
     """Ensure input dataframe maps on properly to data and paths."""
     # dataset_parent: str = str(dataset_dir.parent.expanduser().resolve()) + "/"
-    dataset_base_path: Path = dataset_dir.parent.expanduser().resolve()
-    unfiltered_path_df: pl.DataFrame = pl.read_csv(path_csv_str, separator=";")  # read metadata CSV
+    dataset_base_path: Path = dataset_path.parent.expanduser().resolve()
+    unfiltered_path_df: pl.DataFrame = pl.read_csv(csv_path, separator=";")  # read metadata CSV
 
     # get each path, get rid of leading "./", prepend it with the path to dataset parent, replace original path column
     # clean_abs_path_df: pl.DataFrame = unfiltered_path_df.with_columns(
@@ -108,3 +138,59 @@ def build_metadata_csv(root: Path, out: Path) -> pl.DataFrame:
         df.write_csv(out, separator=";")  # otherwise, save to specified file
 
     return df
+
+
+def validate_bins(
+    centers: NDArray[np.float64],
+    digitized_data: NDArray[np.intp],
+    min_samples: int,
+    z: NDArray[np.float64],
+    sigma_floor: float = 1,
+):
+    """Check that bins are non-zero, and if so return statistical measures."""
+    good_bins: list[
+        tuple[float, float, float]
+    ] = []  # initialize a list of non-zero bins for x, mu, sigma
+
+    for k, center in enumerate(centers):
+        mask = (
+            digitized_data == k
+        )  # assign only values where the center lines up with values of this particular bin
+        n = mask.sum()  # sum to find the total samples in the bin
+        if n < min_samples:
+            continue  # skip thinly populated bins
+
+        vals = z[mask]  # if there are sufficient values, we can use it
+        mu = vals.mean()  # find the average value in this bin
+        # find the standard deviation, but limit it such that we don't violate significant figures
+        sigma = max(vals.std(ddof=1), sigma_floor)
+
+        good_bins.append((center, mu, sigma))  # store these values for plotting
+
+    # prevent analyzing too few bins
+    if len(good_bins) < 2:
+        logger.warning("Not enough populated bins to compute chi^2.")
+        return good_bins
+    else:
+        return good_bins
+
+
+def print_list(input_list: list[Any]) -> None:
+    """Small helper to print lists nicely."""
+    print(*input_list, sep=",")
+
+
+def convert_array_tolist_type(data_array: NDArray[Any], data_type: Any):
+    """Convert a numpy array to a list of a certain type."""
+    data_list: list[Any] = []
+    for i in range(len(data_array)):
+        try:
+            data_list.append(data_type(data_array[i]))
+        except ValueError as ve:
+            # Handle the exception by raising an error
+            logger.exception(f"Cannot convert '{data_array[i]}' to {data_type.__name__}")
+            raise ve
+        except IndexError as ie:
+            logger.exception(f"Cannot find index at '{i}' max index is {len(data_array)}")
+            raise ie
+    return data_list

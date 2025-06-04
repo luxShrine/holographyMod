@@ -4,14 +4,29 @@ Styled after https://github.com/showyourwork/showyourwork/tree/main.
 
 """
 
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+def path_check(**kwargs: Path):
+    """Ensure all paths passed in exist."""
+    logger = logging.getLogger(__name__)
+    for variable, path_to_check in kwargs:
+        try:
+            assert isinstance(path_to_check, Path), f"{path_to_check} is not a path."
+            _ = path_to_check.exists()
+        except Exception as e:
+            logger.error(f"{variable} not found/processed at {path_to_check}")
+            raise e
 
 
 # ruff: noqa: D103
 # Absolute path to the top level of the repository
 # root = Path(__file__).resolve().parents[2].absolute()
 def repo_root() -> Path:
-    return Path(__file__).resolve().parents[3].absolute()
+    return Path(__file__).resolve().parents[4].absolute()
 
 
 # Absolute path to the `src` folder

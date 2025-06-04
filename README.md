@@ -69,6 +69,26 @@ holo train [OPTIONS] DS_ROOT
 - `-c, --classfiication`: Change analysis type to classification
 - `--help`: Show this message and exit.
 
+### Example Parameters
+
+Quick test settings
+
+```console
+batch = 8
+crop = 256
+ep = 8
+learn_rate = 1e-4
+```
+
+Substantial test settings
+
+```console
+batch = 16
+crop = 512
+ep = 50
+learn_rate = 5e-5
+```
+
 ## `plot-train`
 
 Plot the data saved from autofocus training.
