@@ -132,7 +132,7 @@ class PlotPred:
     z_train: list[np.float64]
     zerr_train: list[np.float64]
     zerr_test: list[np.float64]
-    bin_edges: npt.NDArray[np.float64] | None
+    bin_edges: list[np.float64] | None
     title: str
     path_to_plot: str
     display: DisplayType | str
