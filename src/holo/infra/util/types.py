@@ -12,7 +12,7 @@ from beartype.vale import Is
 
 _T_co = TypeVar("_T_co", covariant=True)
 
-logger = logging.getLogger(__name__)  # __name__ is a common choice
+logger = logging.getLogger(__name__)   
 
 
 # -- SINGLETON UNIT REGISTRY ---------------------------------------------------------------------
