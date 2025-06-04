@@ -6,7 +6,7 @@ from typing import Any, Literal
 import numpy as np
 import numpy.typing as npt
 import torch
-from torch import Tensor
+from PIL.Image import Image as ImageType
 from torch.nn import Module
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, Dataset
@@ -110,10 +110,10 @@ class CoreTrainer:
     loss_fn: Any
     optimizer: Optimizer
     scheduler: Any
-    train_ds: Dataset
-    train_loader: DataLoader
-    val_ds: Dataset
-    val_loader: DataLoader
+    train_ds: Dataset[tuple[ImageType, np.float64]]
+    train_loader: DataLoader[tuple[ImageType, np.float64]]
+    val_ds: Dataset[tuple[ImageType, np.float64]]
+    val_loader: DataLoader[tuple[ImageType, np.float64]]
     z_sig: Q_
     z_mu: Q_
 
@@ -140,8 +140,8 @@ class GatherZ:
 
     model: Module
     analysis: AnalysisType
-    t_loader: DataLoader[tuple[Tensor, Tensor]]
-    v_loader: DataLoader[tuple[Tensor, Tensor]]
+    t_loader: DataLoader[tuple[ImageType, np.float64]]
+    v_loader: DataLoader[tuple[ImageType, np.float64]]
     usr_device: Literal["cuda", "cpu"]
     bin_centers_phys: npt.NDArray[np.float64] | None = None
     z_mu_phys: float | None = None
