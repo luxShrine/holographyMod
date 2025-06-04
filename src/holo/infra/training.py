@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, override
 
 import numpy as np
 import numpy.typing as npt
@@ -35,18 +35,34 @@ logger = logging.getLogger(__name__)
 
 
 class TransformedDataset(Dataset[tuple[ImageType, np.float64]]):
+    """Transform the input dataset by applying transfomations to it's contents.
+
+    By wrapping the underlying dataset in this class, we can ensure that attrbutes
+    retrived from this new object will undergo the expected transfomrmations while
+    preserving the original data.
+
+    Attributes:
+        subset_obj: Subset[tuple[ImageType, np.float64]] Subset of the original
+                    dataset.
+        img_transform: v2.Compose | None  Transformation(s) to be applied to images.
+        label_transform: v2.Lambda | None Transformation(s) to be applied to labels.
+
+    """
+
     def __init__(
         self,
         subset_obj: Subset[tuple[ImageType, np.float64]],
-        img_transform=None,
-        label_transform=None,
-    ):
-        self.subset_obj = subset_obj
-        self.img_transform = img_transform
-        self.label_transform = label_transform
+        img_transform: v2.Compose | None = None,
+        label_transform: v2.Lambda | None = None,
+    ) -> None:
+        # NOTE: v2 transformation classes != typical torch transformation classes
+        self.subset_obj: Subset[tuple[ImageType, np.float64]] = subset_obj
+        self.img_transform: v2.Compose | None = img_transform
+        self.label_transform: v2.Lambda | None = label_transform
 
-    def __getitem__(self, idx) -> tuple[Any | ImageType, Any | np.float64]:
-        # Subset object calls __getitem__ of the wrapped dataset
+    @override
+    def __getitem__(self, idx: int) -> tuple[Any | ImageType, Any | np.float64]:
+        """Retrieve the image and label from the subest object."""
         img, label = self.subset_obj[idx]  # Gets (PIL Image, raw_label)
 
         if self.img_transform:
@@ -56,6 +72,7 @@ class TransformedDataset(Dataset[tuple[ImageType, np.float64]]):
         return img, label
 
     def __len__(self):
+        """Get number of entries in subset."""
         return len(self.subset_obj)
 
 
