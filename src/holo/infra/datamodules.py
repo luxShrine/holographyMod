@@ -29,21 +29,19 @@ class HologramFocusDataset(Dataset[tuple[ImageType, np.float64]]):
     def __init__(
         self,
         mode: AnalysisType,
-        csv_file: str,
         num_classes: int | None,
-        transform=None,
-        target_transform=None,
+        csv_file_strpath: str = (HOLO_DEF / Path("ODP-DLHM-Database.csv")).as_posix(),
     ) -> None:
         # inherit from torch dataset
         # super().__init__()
         # Create set of records to draw from
-        csv_file_path: Path = HOLO_DEF / Path(csv_file)
+        csv_file_path: Path = Path(csv_file_strpath)
         self.records: pl.DataFrame = correct_data_csv(csv_file_path.resolve(), HOLO_DEF.resolve())
         self.mode: AnalysisType = mode
         self.num_classes: int | None = num_classes
 
         self.holo_dir: Path = csv_file_path.parent
-        self.metadata_csv_path_str: str = csv_file
+        self.metadata_csv_path_str: str = csv_file_strpath
         self.paths: list[Path] = [self.holo_dir / Path(p) for p in self.records["path"].to_list()]
 
         # Store magnitudes in meters
@@ -52,12 +50,8 @@ class HologramFocusDataset(Dataset[tuple[ImageType, np.float64]]):
         # NOTE: constant pixel size
         self.px_m: Np1Array32 = np.full(len(self.z_m), 3.8e-6, dtype=np.float32)
 
-        # Transforms & labels
-        self.transform = transform
-        self.target_transform = target_transform
         # the z depth on its own cannot be passed to the model, it must be
         # converted to a set of bins, as integers. to do so digitize array => bins
-
         z_uniq = np.unique(self.z_m)
         logger.debug(
             f"unique depths sample (m): {z_uniq[:10]} \n total: {len(np.unique(self.z_m))}"
@@ -91,6 +85,7 @@ class HologramFocusDataset(Dataset[tuple[ImageType, np.float64]]):
                 + f"centers: {self.bin_centers}"
             )
 
+        # TODO: Implement automatic bin creation logic in some form
         # bins ought to wide enough to be populated, but not too wide as to loose meaning
         # first, establish range of bins, limited as to not become negative
         # potential_lb = self.z_m.min() - self.z_m.std()
