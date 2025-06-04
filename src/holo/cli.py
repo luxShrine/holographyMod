@@ -69,24 +69,26 @@ def train(
     if backbone == "vit" and crop_size != 224:
         logger.error(
             f"backbone of type {backbone} requires a crop size of 224,"
-            "defaulting to appropriate crop size"
+            + "defaulting to appropriate crop size"
         )
         crop_size = 224
 
     if (ds_root / Path(meta_csv_name)).exists():
-        logger.info(f" path to csv exists {ds_root / Path(meta_csv_name)}")
+        meta_csv_strpath = (ds_root / Path(meta_csv_name)).as_posix()
+        logger.info(f" path to csv exists {meta_csv_name}")
     else:
-        new_def_path = MW_data() / Path(meta_csv_name)
+        new_def_path: Path = MW_data() / Path(meta_csv_name)
         logger.error(f" path to csv does not exist, using default paths {new_def_path}")
         logger.warning(f"Checking {new_def_path}")
         if new_def_path.exists():
-            logger.info(f"{new_def_path} exists, continuing...")
+            meta_csv_strpath = (new_def_path).as_posix()
+            logger.info(f"{meta_csv_strpath} exists, continuing...")
         else:
             raise Exception(f" path to csv still does not exist: {new_def_path}")
 
     autofocus_config = AutoConfig(
         out_dir=out_dir,
-        meta_csv_name=meta_csv_name,
+        meta_csv_strpath=meta_csv_strpath,
         num_classes=num_classes,
         backbone=backbone,
         batch_size=batch_size,
