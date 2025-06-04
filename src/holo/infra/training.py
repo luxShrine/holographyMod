@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from line_profiler import profile
+from PIL.Image import Image as ImageType
 from rich.progress import (
     BarColumn,
     Progress,
@@ -29,19 +30,21 @@ from holo.infra.tests import test_base
 from holo.infra.util.prog_helper import MetricColumn, RateColumn
 from holo.infra.util.types import Q_, AnalysisType, Np1Array64, u
 
-if TYPE_CHECKING:
-    from PIL.Image import Image as ImageType
-
 logger = logging.getLogger(__name__)
 
 
-class TransformedDataset(Dataset):
-    def __init__(self, subset_obj: Subset, img_transform=None, label_transform=None):
+class TransformedDataset(Dataset[tuple[ImageType, np.float64]]):
+    def __init__(
+        self,
+        subset_obj: Subset[tuple[ImageType, np.float64]],
+        img_transform=None,
+        label_transform=None,
+    ):
         self.subset_obj = subset_obj
         self.img_transform = img_transform
         self.label_transform = label_transform
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx) -> tuple[Any | ImageType, Any | np.float64]:
         # Subset object calls __getitem__ of the wrapped dataset
         img, label = self.subset_obj[idx]  # Gets (PIL Image, raw_label)
 
@@ -112,7 +115,7 @@ def train_autofocus(a_config: AutoConfig) -> PlotPred:
     return return_z(holo_base_ds, a_config, gather_z_obj)
 
 
-def return_z(holo_base_ds, a_config, gather):
+def return_z(holo_base_ds: HologramFocusDataset, a_config: AutoConfig, gather: GatherZ):
     # gather_pickle_strpath = Path("gather_z.pkl").as_posix()
     # with open(gather_pickle_strpath, "rb") as f:
     #     gather = pickle.load(f)
@@ -187,8 +190,8 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
         # Calculate mu and sigma from the training subset's physical z-values
         # Need to access original z_m from base dataset via indices of train_subset
         train_z_physical_subset: Np1Array64 = base.z_m[train_subset.indices]
-        core_z_mu_val = train_z_physical_subset.mean()
-        core_z_sig_val = train_z_physical_subset.std()
+        core_z_mu_val: np.float64 = train_z_physical_subset.mean()
+        core_z_sig_val: np.float64 = train_z_physical_subset.std()
         if core_z_sig_val < 1e-6:  # Avoid division by zero or very small std
             core_z_sig_val = 1.0
             logger.warning(
@@ -233,13 +236,13 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
     )
     logger.debug("transformed datasets created")
 
-    eval_dl: DataLoader[tuple[ImageType, Q_, Q_, npt.NDArray[Any]]] = DataLoader(
+    eval_dl: DataLoader[tuple[ImageType, np.float64]] = DataLoader(
         tf_eval_ds,
         batch_size=a_cfg.batch_size,
         shuffle=True,
         pin_memory=a_cfg.device == "cuda",
     )
-    train_dl: DataLoader[tuple[ImageType, Q_, Q_, npt.NDArray[Any]]] = DataLoader(
+    train_dl: DataLoader[tuple[ImageType, np.float64]] = DataLoader(
         tf_train_ds,
         batch_size=a_cfg.batch_size,
         shuffle=True,
@@ -282,7 +285,7 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
     return core_trainer_config
 
 
-def test_loader(ds_loader: DataLoader) -> None:
+def test_loader(ds_loader: DataLoader[tuple[ImageType, np.float64]]) -> None:
     """Attempt to grab image and label."""
     try:
         train_features, train_labels = next(iter(ds_loader))
@@ -364,7 +367,7 @@ def test_training_config(t_cfg: CoreTrainer, a_cfg: AutoConfig) -> None:
 
 @profile
 def train_eval_epoch(
-    epoch_cfg: CoreTrainer, a_cfg: AutoConfig, best_val_metric
+    epoch_cfg: CoreTrainer, a_cfg: AutoConfig, best_val_metric: float
 ) -> tuple[float, float, float, float]:
     """Trains model over one epoch.
 
@@ -372,256 +375,197 @@ def train_eval_epoch(
         float: Average loss of the model after epoch completes.
 
     """
-    Path(a_cfg.out_dir).mkdir(exist_ok=True)
+    _ = Path(a_cfg.out_dir).mkdir(exist_ok=True)
     path_to_checkpoint: Path = Path(a_cfg.out_dir) / Path("latest_checkpoint.pth")
-    path_to_model: Path = Path(a_cfg.out_dir) / Path("best_model.pth")
+    _path_to_model: Path = Path(a_cfg.out_dir) / Path("best_model.pth")
     progress_bar = setup_rich_progress(a_cfg.analysis)
-    epoch_task = progress_bar.add_task(
+
+    _ = progress_bar.add_task(
         "Epoch",
         total=a_cfg.epoch_count,
         avg_loss=0,
         val_loss=0,
         accuracy_measure=0,
-        lr=epoch_cfg.optimizer.param_groups[0]["lr"],
+        lr=float(epoch_cfg.optimizer.param_groups[0]["lr"]),
     )
     train_task = progress_bar.add_task("Train", total=len(epoch_cfg.train_loader), avg_loss=0)
     val_task = progress_bar.add_task("Eval", total=len(epoch_cfg.val_loader), avg_loss=0)
 
     _ = epoch_cfg.model.train()
-    train_loss_epoch = 0
-    train_total_samples = 0
-    device = torch.device("cpu") if a_cfg.device == "cpu" else torch.device("cuda")
-    logger.info(f"Using: {device}, for training.")
-    # ensure model is on proper device
-    _ = epoch_cfg.model.to(device)
-    # -- Training --------------------------------------------------------------------------------
+    loss_sum_val: float = 0.0  # Sum of losses for all samples
+    total_samples_for_loss: int = 0  # Denominator for average loss
+    avg_loss_train = 0
+    avg_loss_val = 0
+    metric_val = 0
+    labels_tensor: Tensor = torch.empty([1, 1])
+
     with progress_bar:  # allow for tracking of progress
-        for epochs in range(a_cfg.epoch_count):
-            # for imgs, labels in track(epoch_cfg.train_loader, "Training..."):
-            progress_bar.reset(
-                train_task, total=len(epoch_cfg.train_loader), train_loss=0, avg_loss=0
-            )
-            progress_bar.reset(val_task, total=len(epoch_cfg.val_loader), val_loss=0, avg_loss=0)
-            for imgs, labels in epoch_cfg.train_loader:
-                imgs, labels = (
-                    # PERF: Non-blocking speed up
-                    imgs.to(device, non_blocking=True),
-                    labels.to(device, non_blocking=True),
-                    # imgs.to(device),
-                    # labels.to(device),
-                )
-                assert next(epoch_cfg.model.parameters()).device == imgs.device == labels.device, (
-                    f"Images {imgs.device}, labels {labels.device}, or model {next(epoch_cfg.model.parameters()).device} not on same device."
-                )
-
-                # pass in tensors of images, to get output of tensor data
-                pred: Tensor = epoch_cfg.model(imgs)
-                assert pred.dtype == imgs.dtype == torch.float32, (
-                    "dtype mismatch of predictions and images in training."
-                )
-                # reduce tensor size down to one dimension as we are only looking for one prediction
-                if a_cfg.analysis == AnalysisType.REG and pred.ndim == 2 and pred.shape[1] == 1:
-                    pred = pred.squeeze(1)
-
-                # check loss fn type
-                if isinstance(epoch_cfg.loss_fn, nn.BCEWithLogitsLoss):
-                    labels = labels.float().unsqueeze(1)  # BCE expects float 0/1
-                    logger.debug(f"labels:, {labels.size}")
-                if isinstance(epoch_cfg.loss_fn, nn.CrossEntropyLoss):
-                    labels = labels.long()
-
-                # check that labels are in range expected
-                # n_classes = pred.size(1)
-                # if epochs == 0:
-                #     # PERF: huge performance hit precalculate ?<05-26-25>
-                #     # TODO: explain
-                #     if (labels.min() < 0) or (labels.max() >= n_classes):
-                #         raise Exception(f"label out of range: {labels.min()} – {labels.max()}")
-
-                # this loss is the current average over the batch
-                # to find the total loss over the epoch we must sum over
-                # each mean loss times the number of images
-                train_loss_current: Tensor = epoch_cfg.loss_fn(pred, labels)
-                # sum the value of the loss, scaled to the size of image tensor
-                # PERF: huge performance hit <05-26-25>
-                # train_loss_epoch += train_loss_current.item() * imgs.size(0)
-                train_loss_epoch += train_loss_current.item()
-                train_total_samples += imgs.size(0)
-
-                # compute the gradient of the loss
-                _ = train_loss_current.backward()
-                # compute one step of the optimization algorithm
-                epoch_cfg.optimizer.step()
-                # reset gradients each loop
-                epoch_cfg.optimizer.zero_grad()
-
-                # update progress bar
-                progress_bar.update(
-                    train_task, advance=1, loss=f"{train_loss_epoch / train_total_samples:.4f}"
-                )
-
-            # TODO: test, move to own function potentially
-            # Check if any samples were processed
-            if train_total_samples == 0:
-                raise Exception("No samples processed in train_epoch. Returning 0.0 loss.")
-            # Check if loader.dataset exists and is not None before calculating length
-            dataset_len = len(epoch_cfg.train_loader.dataset[1])
-            if dataset_len == 0:
-                raise Exception("Dataset is empty!")
-
-            # -- Evaluation Loop -----------------------------------------------------------------
-            _ = epoch_cfg.model.eval()
-            loss_sum_val: float = 0.0  # Sum of losses for all samples
-            abs_err_sum: float = 0.0  # Sum of absolute errors or correct classification counts
-            total_samples_for_metric: int = 0  # Denominator for MAE/Accuracy
-            total_samples_for_loss: int = 0  # Denominator for average loss
-            # reduces memory consumption when doing inference, as is the case for validation
-            with torch.no_grad():
-                for epoch in range(a_cfg.epoch_count):
-                    # for imgs, labels in track(epoch_cfg.val_loader, "Evaluating..."):
-                    for imgs, labels in epoch_cfg.val_loader:
-                        # sending the images to the tensor is converting them from a PIL image
-                        # to float32 tensors on [0,1]
-                        imgs, labels = imgs.to(device), labels.to(device)
-                        outputs: Tensor = epoch_cfg.model(imgs)
-
-                        # Checks that model was moved to the proper device prior to
-                        # calling this function
-                        # NOTE: check that data types match across the outputs and
-                        # images as tensors
-                        assert (
-                            next(epoch_cfg.model.parameters()).device
-                            == imgs.device
-                            == labels.device
-                        ) and (outputs.dtype == imgs.dtype == torch.float32)
-
-                        # if we are doing regression and the output tensor is of size [Batch, 1]
-                        # we need to "squeeze" it into a one dimentisonal tensor of [Batch]
-                        if (
-                            a_cfg.analysis == AnalysisType.REG
-                            and outputs.dim() == 2
-                            and outputs.size(1) == 1
-                        ):
-                            outputs = outputs.squeeze(1)
-
-                        current_loss = epoch_cfg.loss_fn(outputs, labels)
-                        loss_sum_val += current_loss.item() * imgs.size(0)
-                        total_samples_for_loss += imgs.size(0)
-
-                        # TODO: detect whether normalized or not <luxShrine>
-                        # conditionally de-normalise as tensors
-                        if a_cfg.analysis == AnalysisType.REG:
-                            z_pred_m: Tensor = (
-                                outputs * epoch_cfg.z_sig.magnitude + epoch_cfg.z_mu.magnitude
-                            )
-                            z_true_m: Tensor = (
-                                labels * epoch_cfg.z_sig.magnitude + epoch_cfg.z_mu.magnitude
-                            )
-                            assert z_true_m.size() == z_pred_m.size(), (
-                                "z_pred and z_true are not the same size, cannot be compared"
-                            )
-                            abs_err_sum += torch.sum(torch.abs(z_pred_m - z_true_m)).item()
-                            total_samples_for_metric += z_true_m.numel()
-                        elif a_cfg.analysis == AnalysisType.CLASS:
-                            # Get predicted class indices
-                            pred_classes = torch.argmax(outputs, dim=1)  # Shape: [B]
-                            # Labels size should be [B] and long type
-                            # Ensure labels are the same shape as pred_classes for comparison
-                            assert pred_classes.shape == labels.shape, (
-                                f"Shape mismatch: pred_classes {pred_classes.shape}, labels {labels.shape}"
-                            )
-
-                            # Sum predictions
-                            # PERF: huge performance hit <05-26-25>
-                            abs_err_sum += (pred_classes == labels).sum().item()
-                            # numbero of correct predictions
-                            total_samples_for_metric += labels.size(0)
-
-                            # update progress bar
-                            progress_bar.update(
-                                val_task,
-                                advance=1,
-                                loss=f"{loss_sum_val / train_total_samples:.4f}",
-                            )
-
-                    if total_samples_for_loss == 0:
-                        raise Exception("No samples processed in validate_epoch.")
-                    # Should not happen if total_samples_for_loss > 0
-                    if total_samples_for_metric == 0:
-                        logger.error(
-                            "Mismatch in sample counts for validation metric calculation."
-                            " Returning 0.0 for metric."
-                        )
-                        metric_val = 0.0
-                    else:
-                        metric_val = abs_err_sum / total_samples_for_metric
-
+        for epoch in range(a_cfg.epoch_count):
+            for loader in [epoch_cfg.train_loader, epoch_cfg.val_loader]:
+                if loader is epoch_cfg.train_loader:
+                    # -- Training ----------------------------------------------------------------
+                    # ensure model is on proper device
+                    progress_bar.reset(
+                        train_task, total=len(epoch_cfg.train_loader), train_loss=0, avg_loss=0
+                    )
+                    train_loss_epoch, labels_tensor, train_total_samples, _ = epoch_loop(
+                        a_cfg, epoch_cfg, progress_bar, train_task, "train"
+                    )
                     avg_loss_train = train_loss_epoch / train_total_samples
-                    avg_loss_val = loss_sum_val / total_samples_for_loss
-
-                    if a_cfg.analysis == AnalysisType.REG:
-                        labels_tensor = torch.as_tensor(
-                            epoch_cfg.evaluation_metric, dtype=torch.float32
-                        )
-                        logger.debug(
-                            f"At {epochs} / {a_cfg.epoch_count} Val MAE: {metric_val:.9f} µm"
-                        )
-                    else:
-                        # using bin value
-                        labels_tensor = torch.as_tensor(epoch_cfg.evaluation_metric)
-                        # Ensure percent
-                        logger.debug(
-                            f"At {epochs} / {a_cfg.epoch_count} Val Acc: {metric_val * 100:.2f} %"
-                        )
-
-                    # Save latest model
-                    torch.save(
-                        {
-                            "epoch": epoch,
-                            "model_state_dict": epoch_cfg.model.state_dict(),
-                            "bin_centers": getattr(epoch_cfg.train_loader, "bin_centers", None),
-                            "num_bins": a_cfg.num_classes,
-                            "labels": labels_tensor,
-                            "optimizer_state_dict": epoch_cfg.optimizer.state_dict(),
-                            "train_loss": avg_loss_train,
-                            "val_loss": avg_loss_val,
-                            "val_metric": metric_val,
-                        },
-                        path_to_checkpoint,
+                else:
+                    # -- Evaluation Loop ---------------------------------------------------------
+                    progress_bar.reset(
+                        val_task, total=len(epoch_cfg.val_loader), val_loss=0, avg_loss=0
                     )
-                    save_best_model_flag = False
-                    if a_cfg.analysis == AnalysisType.REG:  # Lower MAE is better
-                        if metric_val < best_val_metric:
-                            best_val_metric = metric_val
-                            save_best_model_flag = True
-                    else:  # Higher Accuracy is better
-                        if metric_val > best_val_metric:
-                            best_val_metric = metric_val
-                            save_best_model_flag = True
-                    # Save best model
-                    if save_best_model_flag:
-                        torch.save(
-                            {
-                                "epoch": epoch,
-                                "model_state_dict": epoch_cfg.model.state_dict(),
-                                "labels": labels_tensor,
-                                "bin_centers": getattr(epoch_cfg.train_loader, "bin_centers", None),
-                                "num_bins": a_cfg.num_classes,
-                                "val_metric": best_val_metric,
-                            },
-                            path_to_model,
+                    with torch.no_grad():
+                        avg_loss_val, labels_tensor, total_samples_for_loss, metric_val = (
+                            epoch_loop(a_cfg, epoch_cfg, progress_bar, val_task, "val")
                         )
+                        avg_loss_val = loss_sum_val / total_samples_for_loss
 
-                    progress_bar.update(
-                        epoch_task,
-                        advance=1,
-                        train_loss=avg_loss_train,
-                        val_loss=avg_loss_val,
-                        val_err=metric_val,
-                        lr=epoch_cfg.optimizer.param_groups[0]["lr"],
-                    )
+            # Save latest model, after going through both loaders
+            _ = torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": epoch_cfg.model.state_dict(),
+                    "bin_centers": getattr(epoch_cfg.train_loader, "bin_centers", None),
+                    "num_bins": a_cfg.num_classes,
+                    "labels": labels_tensor,
+                    "optimizer_state_dict": epoch_cfg.optimizer.state_dict(),
+                    "train_loss": avg_loss_train,
+                    "val_loss": avg_loss_val,
+                    "val_metric": metric_val,
+                },
+                path_to_checkpoint,
+            )
 
+    assert isinstance(metric_val, float)
     return avg_loss_train, avg_loss_val, metric_val, best_val_metric
+
+
+def epoch_loop(
+    a_cfg: AutoConfig, epoch_cfg: CoreTrainer, progress_bar: Progress, task_id, type: str
+) -> tuple[float, Tensor, int, float | None]:
+    """Do one loop of evaluation and training."""
+    device = torch.device("cpu") if a_cfg.device == "cpu" else torch.device("cuda")
+    if type == "train":
+        loader = epoch_cfg.train_loader
+        _ = epoch_cfg.model.to(device)
+    else:
+        loader = epoch_cfg.val_loader
+        # reduces memory consumption when doing inference, as is the case for validation
+        _ = epoch_cfg.model.eval()
+
+    loss_epoch = 0
+    total_samples: int = 0
+    abs_err_sum = 0
+    metric_val = 0
+    total_samples_for_metric = 0  # Denominator for MAE/Accuracy
+    labels_tensor: Tensor = torch.empty([1, 1])
+    logger.debug(f"Using: {device}, for training.")
+    for imgs, labels in loader:
+        # sending the images to the tensor is converting them from a PIL image
+        # to float32 tensors on [0,1]
+        imgs_tens, labels_tens = (
+            # PERF: Non-blocking speed up
+            imgs.to(device, non_blocking=True),
+            labels.to(device, non_blocking=True),
+        )
+        assert (
+            next(epoch_cfg.model.parameters()).device == imgs_tens.device == labels_tens.device
+        ), (
+            f"Images {imgs_tens.device}, labels {labels_tens.device}, or model "
+            f"{next(epoch_cfg.model.parameters()).device} not on same device."
+        )
+        imgs_tens: Tensor
+        labels_tens: Tensor
+
+        # -- pass images to model ----------------------------------------------------------------
+        # get output of tensor data
+        pred: Tensor = epoch_cfg.model(imgs_tens)
+        assert pred.dtype == imgs_tens.dtype == torch.float32, (
+            "dtype mismatch of predictions and images in training pred: "
+            f"{pred.dtype}, imgs: {imgs_tens.dtype}."
+        )
+
+        # -- refine preds/labels -----------------------------------------------------------------
+        # if we are doing regression and the output tensor is of size [Batch, 1]
+        # we need to "squeeze" it into a one dimentisonal tensor of [Batch]
+        if a_cfg.analysis == AnalysisType.REG and pred.ndim == 2 and pred.shape[1] == 1:
+            pred = pred.squeeze(1)
+
+        # check loss fn type
+        if isinstance(epoch_cfg.loss_fn, nn.BCEWithLogitsLoss):
+            labels_tens = labels_tens.float().unsqueeze(0)  # BCE expects float 0/1
+            logger.debug(f"labels:, {labels_tens.size}")
+        elif isinstance(epoch_cfg.loss_fn, nn.CrossEntropyLoss):
+            labels_tens = labels_tens.long()
+        else:
+            raise Exception(f"Loss function is unknown: {epoch_cfg.loss_fn}")
+
+        # -- calculate loss-----------------------------------------------------------------------
+        # this loss is the current average over the batch
+        # to find the total loss over the epoch we must sum over
+        # each mean loss times the number of images
+        loss_fn_current = epoch_cfg.loss_fn(pred, labels_tens)
+
+        # valuation is set to no_grad, this will not work on said tensor
+        if type == "train":
+            # compute the gradient of the loss
+            _ = loss_fn_current.backward()
+            # compute one step of the optimization algorithm
+            epoch_cfg.optimizer.step()
+            # reset gradients each loop
+            epoch_cfg.optimizer.zero_grad()
+
+        # sum the value of the loss, scaled to the size of image tensor
+        # PERF: huge performance hit <05-26-25>
+        loss_epoch += cast("float", (loss_fn_current.item() * imgs_tens.size(0)))
+        total_samples += cast("int", imgs_tens.size(0))
+
+        # -- absolute error sum & labels tensor --------------------------------------------------
+        if a_cfg.analysis == AnalysisType.REG:
+            # conditionally de-normalise as tensors
+            z_pred_m: Tensor = pred * epoch_cfg.z_sig.magnitude + epoch_cfg.z_mu.magnitude
+            z_true_m: Tensor = labels_tens * epoch_cfg.z_sig.magnitude + epoch_cfg.z_mu.magnitude
+            assert z_true_m.size() == z_pred_m.size(), (
+                "z_pred and z_true are not the same size, cannot be compared"
+            )
+            abs_err_sum += torch.sum(torch.abs(z_pred_m - z_true_m)).item()
+            total_samples_for_metric += z_true_m.numel()
+
+            # continuous value
+            labels_tensor = torch.as_tensor(epoch_cfg.evaluation_metric, dtype=torch.float32)
+        else:
+            # Get predicted class indices
+            pred_classes = torch.argmax(pred, dim=1)  # Shape: [B]
+            # Labels size should be [B] and long type
+            # Ensure labels are the same shape as pred_classes for comparison
+            assert pred_classes.shape == labels_tens.shape, (
+                f"Shape mismatch: pred_classes {pred_classes.shape}, labels {labels_tens.shape}"
+            )
+
+            # Sum predictions
+            # PERF: huge performance hit <05-26-25>
+            abs_err_sum += (pred_classes == labels_tens).sum().item()
+            # number of correct predictions
+            total_samples_for_metric += labels_tens.size(0)
+
+            # using bin value
+            labels_tensor = torch.as_tensor(epoch_cfg.evaluation_metric)
+
+        metric_val: float = float(abs_err_sum / total_samples_for_metric)
+
+        # update progress bar
+        progress_bar.update(task_id, advance=1, loss=f"{loss_epoch / total_samples:.4f}")
+
+    assert isinstance(loss_epoch, float)
+    # evaluation
+    if type == "val":
+        assert isinstance(metric_val, float)
+        return (loss_epoch, labels_tensor, total_samples, metric_val)
+    # else train, not returning metric valuation
+    return (loss_epoch, labels_tensor, total_samples, None)
 
 
 def setup_rich_progress(train_type: AnalysisType) -> Progress:
