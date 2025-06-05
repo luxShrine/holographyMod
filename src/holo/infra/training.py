@@ -33,7 +33,7 @@ from holo.infra.util.types import Q_, AnalysisType, Np1Array64, u
 
 logger = logging.getLogger(__name__)
 
-MAX_MODEL_HISTORY: int = 5
+MAX_MODEL_HISTORY: int = 2
 
 
 class TransformedDataset(Dataset[tuple[ImageType, np.float64]]):
@@ -464,8 +464,35 @@ def train_eval_epoch(
                 )
                 path_to_model_detail: Path = path_to_model.parent / Path(best_model_name)
 
-                # clean up directory if needed
-                # if checkpoint folder has
+                # clean up directory if needed to preserve storage
+                # if checkpoint folder has > MAX_MODEL_HISTORY, remove oldest
+                # pth file
+                # get files in out directory
+                files_in_out_dir: list[str] = [
+                    f.as_posix() for f in path_to_model_detail.parent.iterdir()
+                ]
+                # check if files in directory has potential amount of
+                # files to reach limit before loop.
+                if len(files_in_out_dir) > MAX_MODEL_HISTORY + 1:
+                    # find files that end in ".pth"
+                    file_count_pth: int = 0
+                    oldest_mod_time: float = 0
+                    oldest_file: Path | None = None
+                    for out_file in files_in_out_dir:
+                        if out_file.endswith(".pth"):
+                            file_count_pth += 1
+                            path_out_file: Path = Path(out_file)
+                            mod_time: float = path_out_file.stat().st_mtime
+                            if mod_time > oldest_mod_time:
+                                oldest_file = path_out_file
+                                oldest_mod_time = mod_time
+                    # remove oldest_file if limit reached
+                    if file_count_pth > MAX_MODEL_HISTORY and oldest_file is not None:
+                        logger.debug(
+                            f"Max model history limit of {MAX_MODEL_HISTORY} "
+                            + f"reached, deleting {oldest_file}"
+                        )
+                        oldest_file.unlink()
 
                 _ = torch.save(
                     {
