@@ -10,6 +10,7 @@ import torch.optim as optim
 
 # from line_profiler import profile
 from PIL.Image import Image as ImageType
+from rich import print
 from rich.progress import (
     BarColumn,
     Progress,
@@ -294,9 +295,7 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
         z_sig=core_z_sig,
         z_mu=core_z_mu,
     )
-    logger.info(
-        "[black on green]--- Epoch Variables Initialization Complete ---", extra={"markup": True}
-    )
+    print("[black on green]--- Epoch Variables Initialization Complete ---")
     return core_trainer_config
 
 
@@ -378,7 +377,7 @@ def test_training_config(t_cfg: CoreTrainer, a_cfg: AutoConfig) -> None:
     # t_cfg.z_sig
     # t_cfg.z_mu
     # WARN: doesn't render in console correctly, interupts rich progress bar
-    logger.info("[black on green]--- Training Config Validated ---", extra={"markup": True})
+    print("[black on green]--- Training Config Validated ---")
 
 
 def train_eval_epoch(
@@ -457,7 +456,7 @@ def train_eval_epoch(
             # Save best model, if metric is better
             if save_best_model_flag:
                 # convert to form of 5 numbers, in scientific notation
-                evaluation_sci_notation: str = f"{best_val_metric:4e}"
+                evaluation_sci_notation: str = f"{best_val_metric:3e}"
                 # create file with name that is unique to evaluation
                 best_model_name: str = (
                     path_to_model.name.removesuffix(".pth") + evaluation_sci_notation + ".pth"
@@ -476,16 +475,16 @@ def train_eval_epoch(
                 if len(files_in_out_dir) > MAX_MODEL_HISTORY + 1:
                     # find files that end in ".pth"
                     file_count_pth: int = 0
-                    oldest_mod_time: float = 0
+                    oldest_mod_time: float = np.inf
                     oldest_file: Path | None = None
                     for out_file in files_in_out_dir:
                         if out_file.endswith(".pth"):
                             file_count_pth += 1
                             path_out_file: Path = Path(out_file)
-                            mod_time: float = path_out_file.stat().st_mtime
-                            if mod_time > oldest_mod_time:
+                            current_mod_time: float = path_out_file.stat().st_mtime
+                            if current_mod_time < oldest_mod_time:
                                 oldest_file = path_out_file
-                                oldest_mod_time = mod_time
+                                oldest_mod_time = current_mod_time
                     # remove oldest_file if limit reached
                     if file_count_pth > MAX_MODEL_HISTORY and oldest_file is not None:
                         logger.debug(
