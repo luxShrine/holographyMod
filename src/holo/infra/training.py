@@ -33,6 +33,8 @@ from holo.infra.util.types import Q_, AnalysisType, Np1Array64, u
 
 logger = logging.getLogger(__name__)
 
+MAX_MODEL_HISTORY: int = 5
+
 
 class TransformedDataset(Dataset[tuple[ImageType, np.float64]]):
     """Transform the input dataset by applying transfomations to it's contents.
@@ -389,7 +391,7 @@ def train_eval_epoch(
 
     """
     _ = Path(a_cfg.out_dir).mkdir(exist_ok=True)
-    path_to_checkpoint: Path = Path(a_cfg.out_dir) / Path("latest_checkpoint.pth")
+    path_to_checkpoint: Path = Path(a_cfg.out_dir) / Path("latest_checkpoint.tar")
     path_to_model: Path = Path(a_cfg.out_dir) / Path("best_model.pth")
     progress_bar = setup_rich_progress(a_cfg.analysis)
 
@@ -455,12 +457,16 @@ def train_eval_epoch(
             # Save best model, if metric is better
             if save_best_model_flag:
                 # convert to form of 5 numbers, in scientific notation
-                evaluation_sci_notation: str = f"{best_val_metric:5e}"
+                evaluation_sci_notation: str = f"{best_val_metric:4e}"
                 # create file with name that is unique to evaluation
                 best_model_name: str = (
                     path_to_model.name.removesuffix(".pth") + evaluation_sci_notation + ".pth"
                 )
                 path_to_model_detail: Path = path_to_model.parent / Path(best_model_name)
+
+                # clean up directory if needed
+                # if checkpoint folder has
+
                 _ = torch.save(
                     {
                         "epoch": epoch,
@@ -561,7 +567,7 @@ def epoch_loop(
         # valuation is set to no_grad, this will not work on said tensor
         if type == "train":
             # compute the gradient of the loss
-            _ = loss_fn_current.backward()
+            loss_fn_current.backward()
             # compute one step of the optimization algorithm
             epoch_cfg.optimizer.step()
             # reset gradients each loop
@@ -608,10 +614,8 @@ def epoch_loop(
         # update progress bar
         progress_bar.update(task_id, advance=1, loss=f"{loss_epoch / total_samples:.4f}")
 
-    assert isinstance(loss_epoch, float)
     # evaluation
     if type == "val":
-        assert isinstance(metric_val, float)
         return (loss_epoch, labels_tensor, total_samples, metric_val)
     # else train, not returning metric valuation
     return (loss_epoch, labels_tensor, total_samples, None)
