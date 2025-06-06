@@ -24,6 +24,7 @@ def cli():
     pass
 
 
+# TODO: load settings from external file rather than from cli
 @cli.command()
 @click.argument("ds_root")
 @click.option(
@@ -40,6 +41,7 @@ def cli():
 @click.option("--device_user", default="cuda", help="Device ('cuda' or 'cpu').")
 @click.option("--analysis", default=True, help="Change analysis type to classification")
 @click.option("--seed", default=True, help="Keep the random seed consistent.")
+@click.option("--cont_train", default=False, help="Continue from checkpoint")
 def train(
     ds_root: Path,
     meta_csv_name: str,
@@ -51,9 +53,10 @@ def train(
     batch_size: int,
     ep: int,
     opt_lr: float,
-    device_user: UserDevice,
+    device_user: str,
     analysis: bool,
     seed: bool,
+    cont_train: bool,
 ) -> None:
     """Train the autofocus model based on supplied dataset."""
     from holo.infra.dataclasses import AutoConfig
@@ -64,6 +67,10 @@ def train(
     auto_method = AnalysisType.CLASS if analysis else AnalysisType.REG
 
     logger.info(f"Training type: {auto_method}.")
+
+    path_ckpt: str | None = None if cont_train is False else "./checkpoints/latest_checkpoint.tar"
+
+    dev = UserDevice.CUDA if device_user == "cuda" else UserDevice.CPU
 
     # WARN: not robust for all types, will need a change <05-09-25>
     if backbone == "vit" and crop_size != 224:
@@ -96,12 +103,12 @@ def train(
         crop_size=crop_size,
         opt_lr=opt_lr,
         val_split=val_split,
-        device_user=device_user,
+        device_user=dev,
         analysis=auto_method,
         fixed_seed=seed,
     )
 
-    plot_info = train_autofocus(autofocus_config)
+    plot_info = train_autofocus(autofocus_config, path_ckpt)
     save_obj(plot_info)
 
 

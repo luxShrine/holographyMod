@@ -14,17 +14,18 @@ from rich import print
 from rich.progress import (
     Progress,
 )
-from timm import create_model  # Make sure timm is installed if using ViT from there
+from timm import create_model
 from torch import Tensor
+from torch.optim import Optimizer
 from torch.utils.data import DataLoader, Dataset, Subset, random_split
 from torchvision import models
 from torchvision.transforms import v2
 
 from holo.core.metrics import gather_z_preds
-from holo.infra.dataclasses import AutoConfig, CoreTrainer, GatherZ, PlotPred
+from holo.infra.dataclasses import AutoConfig, Checkpoint, CoreTrainer, GatherZ, PlotPred
 from holo.infra.datamodules import HologramFocusDataset
 from holo.infra.tests import test_base
-from holo.infra.util.prog_helper import MetricColumn, RateColumn
+from holo.infra.util.prog_helper import setup_training_progress
 from holo.infra.util.types import Q_, AnalysisType, Np1Array64, u
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,7 @@ class TransformedDataset(Dataset[tuple[ImageType, np.float64]]):
         return len(self.subset_obj)
 
 
-def train_autofocus(a_config: AutoConfig) -> PlotPred:
+def train_autofocus(a_config: AutoConfig, path_ckpt: str | None = None) -> PlotPred:
     # load data
     holo_base_ds = HologramFocusDataset(
         mode=a_config.analysis,
@@ -87,16 +88,27 @@ def train_autofocus(a_config: AutoConfig) -> PlotPred:
     # distrubute to dataloaders
     # get information to train/validate
     train_cfg: CoreTrainer = transform_ds(holo_base_ds, a_config)
+
+    # with coretrainer and autoconfig created, we can load checkpoint
+    if path_ckpt is not None:
+        ckpt = load_ckpt(path_ckpt, train_cfg.optimizer, train_cfg.model, a_config.device())
+
+        best_val_metric = ckpt.val_metric
+        bin_centers = ckpt.bin_centers
+
+    else:
+        # For measuring evaluation: classificaton is maximizing correct bins,
+        # regression is minimizing the error from expected
+        best_val_metric: float = (
+            float("inf") if a_config.analysis == AnalysisType.REG else -float("inf")
+        )
+        ckpt = None
+
     test_training_config(train_cfg, a_config)
 
-    # For measuring evaluation: classificaton is maximizing correct bins,
-    # regression is minimizing the error from expected
-    best_val_metric: float = (
-        float("inf") if a_config.analysis == AnalysisType.REG else -float("inf")
-    )
     # train/validate, one epoch,
     avg_loss_train, avg_loss_val, metric_val, best_val_metric = train_eval_epoch(
-        train_cfg, a_config, best_val_metric
+        train_cfg, a_config, best_val_metric, ckpt
     )
     logger.info(f"metric_val: {metric_val}")
     logger.info(f"avg_loss_val: {avg_loss_val}")
@@ -251,13 +263,13 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
         tf_eval_ds,
         batch_size=a_cfg.batch_size,
         shuffle=True,
-        pin_memory=a_cfg.device == "cuda",
+        pin_memory=a_cfg.device() == "cuda",
     )
     train_dl: DataLoader[tuple[ImageType, np.float64]] = DataLoader(
         tf_train_ds,
         batch_size=a_cfg.batch_size,
         shuffle=True,
-        pin_memory=a_cfg.device == "cuda",
+        pin_memory=a_cfg.device() == "cuda",
     )
     logger.debug("Dataloaders created successfully")
     test_loader(eval_dl)
@@ -266,6 +278,7 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
     # loss_fn = nn.CrossEntropyLoss() if a_cfg.analysis == AnalysisType.CLASS else nn.SmoothL1Loss()
     loss_fn = nn.CrossEntropyLoss() if a_cfg.analysis == AnalysisType.CLASS else nn.SmoothL1Loss()
     model = _create_model(a_cfg.backbone, model_output_dim, a_cfg.analysis)
+    # optimizer should only be created after model
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=a_cfg.opt_lr, weight_decay=a_cfg.opt_weight_decay
     )
@@ -376,7 +389,7 @@ def test_training_config(t_cfg: CoreTrainer, a_cfg: AutoConfig) -> None:
 
 
 def train_eval_epoch(
-    epoch_cfg: CoreTrainer, a_cfg: AutoConfig, best_val_metric: float
+    epoch_cfg: CoreTrainer, a_cfg: AutoConfig, best_val_metric: float, ckpt: Checkpoint | None
 ) -> tuple[float, float, float, float]:
     """Trains model over one epoch.
 
@@ -387,26 +400,33 @@ def train_eval_epoch(
     _ = Path(a_cfg.out_dir).mkdir(exist_ok=True)
     path_to_checkpoint: Path = Path(a_cfg.out_dir) / Path("latest_checkpoint.tar")
     path_to_model: Path = Path(a_cfg.out_dir) / Path("best_model.pth")
-    progress_bar = setup_rich_progress(a_cfg.analysis)
+    progress_bar: Progress = setup_training_progress(a_cfg.analysis)
+
+    train_loss_start: float = 0 if ckpt is None else ckpt.train_loss
+    val_loss_start: float = 0 if ckpt is None else ckpt.val_loss
 
     _ = progress_bar.add_task(
         "Epoch",
         total=a_cfg.epoch_count,
-        avg_loss=0,
-        val_loss=0,
+        train_loss=train_loss_start,
+        val_loss=val_loss_start,
         accuracy_measure=0,
         lr=float(epoch_cfg.optimizer.param_groups[0]["lr"]),
     )
-    train_task = progress_bar.add_task("Train", total=len(epoch_cfg.train_loader), avg_loss=0)
-    val_task = progress_bar.add_task("Eval", total=len(epoch_cfg.val_loader), avg_loss=0)
+    train_task = progress_bar.add_task(
+        "Train", total=len(epoch_cfg.train_loader), avg_loss=train_loss_start
+    )
+    val_task = progress_bar.add_task(
+        "Eval", total=len(epoch_cfg.val_loader), avg_loss=val_loss_start
+    )
 
     _ = epoch_cfg.model.train()
     loss_sum_val: float = 0.0  # Sum of losses for all samples
     total_samples_for_loss: int = 0  # Denominator for average loss
-    avg_loss_train = 0
-    avg_loss_val = 0
-    metric_val = 0
-    labels_tensor: Tensor = torch.empty([1, 1])
+    avg_loss_train: float = train_loss_start
+    avg_loss_val: float = val_loss_start
+    metric_val = 0 if ckpt is None else ckpt.val_metric
+    labels_tensor: Tensor = torch.empty([1, 1]) if ckpt is None else ckpt.l_tens.to(a_cfg.device())
 
     with progress_bar:  # allow for tracking of progress
         for epoch in range(a_cfg.epoch_count):
@@ -519,11 +539,34 @@ def train_eval_epoch(
     return avg_loss_train, avg_loss_val, metric_val, best_val_metric
 
 
+def check_dtype(type_check: str, expected_type, **kwargs) -> bool:
+    """Check all inputs have same types/datatypse, else return exception."""
+    # get first value to be checked against
+    first_value: Any = next(iter(kwargs.values()))
+    match type_check:
+        # case for tensor items
+        case "dtype":
+            # if expected type is passed, check it against each item
+            if expected_type is not None:
+                all_correct_type = all(v.dtype == expected_type for v in kwargs.values())
+            else:
+                # otherwise ensure consistency with first dtype
+                all_correct_type = all(v.dtype == first_value.dtype for v in kwargs.values())
+            # not all the correct type, show each items dtype
+            if all_correct_type is False:
+                logger.error([(k, v.dtype) for k, v in kwargs.items()])
+                return False
+            return True
+
+        case _:
+            raise Exception(f"Unexpected type check argument {type_check}")
+
+
 def epoch_loop(
     a_cfg: AutoConfig, epoch_cfg: CoreTrainer, progress_bar: Progress, task_id, type: str
 ) -> tuple[float, Tensor, int, float | None]:
     """Do one loop of evaluation and training."""
-    device = torch.device("cpu") if a_cfg.device == "cpu" else torch.device("cuda")
+    device = torch.device("cpu") if a_cfg.device() == "cpu" else torch.device("cuda")
     if type == "train":
         loader = epoch_cfg.train_loader
         _ = epoch_cfg.model.to(device)
@@ -559,10 +602,8 @@ def epoch_loop(
         # -- pass images to model ----------------------------------------------------------------
         # get output of tensor data
         pred: Tensor = epoch_cfg.model(imgs_tens)
-        assert pred.dtype == imgs_tens.dtype == torch.float32, (
-            "dtype mismatch of predictions and images in training pred: "
-            f"{pred.dtype}, imgs: {imgs_tens.dtype}."
-        )
+        if not check_dtype("dtype", torch.float32, predictions=pred, images=imgs_tens):
+            raise Exception(f"dtypes do not match {__file__}")
 
         # -- refine preds/labels -----------------------------------------------------------------
         # if we are doing regression and the output tensor is of size [Batch, 1]
@@ -642,4 +683,26 @@ def epoch_loop(
     return (loss_epoch, labels_tensor, total_samples, None)
 
 
+def load_ckpt(path_ckpt: str, optimizer: Optimizer, model: nn.Module, device: str) -> Checkpoint:
+    checkpoint: dict[str, Any] = torch.load(path_ckpt, weights_only=True, map_location=device)
+    # returns unexepected keys or missing keys for the model if either case occurs
+    missing_keys = model.load_state_dict(checkpoint["model_state_dict"])
+    # must move model to expected device before loading optimiser
+    _ = model.to(device)
+    if len(missing_keys) > 0:
+        logger.info(f"{missing_keys}")
+
+    print(optimizer)
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    print(optimizer)
+    ckpt: Checkpoint = Checkpoint(
+        epoch=checkpoint["epoch"],
+        train_loss=checkpoint["train_loss"],
+        val_loss=checkpoint["val_loss"],
+        val_metric=checkpoint["val_metric"],
+        bin_centers=checkpoint["bin_centers"],
+        num_classes=checkpoint["num_bins"],
+        l_tens=checkpoint["labels"],
     )
+
+    return ckpt

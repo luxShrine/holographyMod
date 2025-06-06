@@ -152,6 +152,17 @@ class GatherZ:
     z_sig_phys: float | None = None
 
 
+@dataclass
+class Checkpoint:
+    epoch: int
+    train_loss: float
+    val_loss: float
+    val_metric: float
+    bin_centers: npt.NDArray[np.float64] | None
+    num_classes: int
+    l_tens: torch.Tensor
+
+
 def load_obj(
     json_name: str = "train_data", dataclass: str = "PlotPred"
 ) -> list[PlotPred | GatherZ]:
