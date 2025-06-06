@@ -1,5 +1,16 @@
-from rich.progress import ProgressColumn, Task
+from rich.progress import (
+    BarColumn,
+    Progress,
+    ProgressColumn,
+    SpinnerColumn,
+    Task,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 from rich.text import Text
+
+from holo.infra.util.types import AnalysisType
 
 
 class RateColumn(ProgressColumn):
@@ -25,3 +36,31 @@ class MetricColumn(ProgressColumn):
         if val is None:
             return Text("–")
         return Text(self.fmt.format(val), style=self.style)
+
+
+def setup_training_progress(train_type: AnalysisType) -> Progress:
+    """Create and configure a Rich Progress bar for training monitoring."""
+    metric_col_name = "val_mae" if train_type == AnalysisType.REG else "val_acc"
+    metric_col_fmt = "{:.4f}" if train_type == AnalysisType.REG else "{:.2%}"
+
+    return Progress(
+        TextColumn("[bold blue]{task.description}", justify="right"),
+        BarColumn(bar_width=None),
+        "[progress.percentage]{task.percentage:>3.1f}%",
+        "•",  # Separator
+        TimeElapsedColumn(),
+        "•",
+        TimeRemainingColumn(),
+        "•",
+        RateColumn(),
+        "•",
+        MetricColumn("train_loss", fmt="{:.4f}", style="magenta"),
+        "•",
+        MetricColumn("val_loss", fmt="{:.4f}", style="yellow"),
+        "•",
+        MetricColumn(metric_col_name, fmt=metric_col_fmt, style="green"),
+        "•",
+        MetricColumn("lr", fmt="{:.1e}", style="dim cyan"),  # Shorter LR format
+        SpinnerColumn(),
+        transient=False,  # Keep finished tasks visible
+    )
