@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 def check_units(vars_to_check: dict[Q_, u]) -> bool:
+    """Return ``True`` if all quantities have the expected units."""
     i = 0
     for v, units in vars_to_check.items():
         if v.u == units:
@@ -18,6 +19,7 @@ def check_units(vars_to_check: dict[Q_, u]) -> bool:
 
 
 def test_base(ds: HologramFocusDataset) -> None:
+    """Basic sanity checks on ``HologramFocusDataset``."""
     # -- Broad Tests -----------------------------------------------------------------------------
     if not isinstance(ds, HologramFocusDataset):
         raise RuntimeError("dataset is not HologramFocusDataset")

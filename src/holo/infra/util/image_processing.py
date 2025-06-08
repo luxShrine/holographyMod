@@ -40,6 +40,7 @@ def norm(data: NDArray[np.float64]) -> NDArray[np.float64]:
 
 # check image is not corrupted
 def _is_valid(path: str) -> bool:
+    """Return ``True`` if the image file is readable by PIL."""
     try:
         with Image.open(path) as im:
             im.verify()  # quickly check if okay

@@ -28,10 +28,12 @@ class MetricColumn(ProgressColumn):
     """Render any numeric field kept in task.fields (e.g. 'loss', 'acc', 'lr')."""
 
     def __init__(self, name: str, fmt: str = "{:.4f}", style: str = "cyan"):
+        """Store rendering parameters for the column."""
         super().__init__()
         self.name, self.fmt, self.style = name, fmt, style
 
     def render(self, task: Task):
+        """Format the stored metric value for display."""
         val = task.fields.get(self.name)
         if val is None:
             return Text("–")

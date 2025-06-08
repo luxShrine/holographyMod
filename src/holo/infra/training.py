@@ -54,6 +54,7 @@ class TransformedDataset(Dataset[tuple[ImageType, np.float64]]):
         img_transform: v2.Compose | None = None,
         label_transform: v2.Lambda | None = None,
     ) -> None:
+        """Initialize the wrapper with optional image and label transforms."""
         # NOTE: v2 transformation classes != typical torch transformation classes
         self.subset_obj: Subset[tuple[ImageType, np.float64]] = subset_obj
         self.img_transform: v2.Compose | None = img_transform
@@ -76,6 +77,7 @@ class TransformedDataset(Dataset[tuple[ImageType, np.float64]]):
 
 
 def train_autofocus(a_config: AutoConfig, path_ckpt: str | None = None) -> PlotPred:
+    """Train the autofocus model and return plotting data."""
     # load data
     holo_base_ds = HologramFocusDataset(
         mode=a_config.analysis,
@@ -142,6 +144,7 @@ def train_autofocus(a_config: AutoConfig, path_ckpt: str | None = None) -> PlotP
 
 
 def return_z(holo_base_ds: HologramFocusDataset, a_config: AutoConfig, gather: GatherZ):
+    """Return ``PlotPred`` object with predictions and errors."""
     assert isinstance(gather, GatherZ), f"gather is not GatherZ, found {type(gather)}"
     train_z_pred, train_z_true, val_z_pred, val_z_true = gather_z_preds(**gather.__dict__)
     # TODO: get something more robust
@@ -165,6 +168,7 @@ def return_z(holo_base_ds: HologramFocusDataset, a_config: AutoConfig, gather: G
 
 
 def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
+    """Split the dataset, apply transforms and build dataloaders."""
     num_labels: int = len(base)
     eval_len = int(a_cfg.val_split * num_labels)
     train_len = num_labels - eval_len
@@ -349,6 +353,7 @@ def _create_model(
 
 
 def test_training_config(t_cfg: CoreTrainer, a_cfg: AutoConfig) -> None:
+    """Validate that the training configuration is well formed."""
     # depends on analysis
     type_eval: type[npt.NDArray[np.float64] | float] = type(t_cfg.evaluation_metric)
     if a_cfg.analysis is a_cfg.analysis.CLASS:
@@ -684,6 +689,7 @@ def epoch_loop(
 
 
 def load_ckpt(path_ckpt: str, optimizer: Optimizer, model: nn.Module, device: str) -> Checkpoint:
+    """Load a training checkpoint and restore optimizer and model state."""
     checkpoint: dict[str, Any] = torch.load(path_ckpt, weights_only=True, map_location=device)
     # returns unexepected keys or missing keys for the model if either case occurs
     missing_keys = model.load_state_dict(checkpoint["model_state_dict"])
