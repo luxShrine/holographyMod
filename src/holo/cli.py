@@ -21,6 +21,7 @@ DEF_IMG_FILE_PATH = (MW_data() / "510" / "10_Phase_USAF" / "z10" / "10.jpg").as_
 
 @click.group()
 def cli():
+    """Entry point for the command line interface."""
     pass
 
 

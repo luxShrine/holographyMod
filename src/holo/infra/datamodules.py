@@ -32,6 +32,7 @@ class HologramFocusDataset(Dataset[tuple[ImageType, np.float64]]):
         num_classes: int | None,
         csv_file_strpath: str = (HOLO_DEF / Path("ODP-DLHM-Database.csv")).as_posix(),
     ) -> None:
+        """Load metadata and prepare dataset fields."""
         # inherit from torch dataset
         # super().__init__()
         # Create set of records to draw from

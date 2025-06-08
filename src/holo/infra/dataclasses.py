@@ -154,6 +154,7 @@ class GatherZ:
 
 @dataclass
 class Checkpoint:
+    """Serialized training state used for resuming."""
     epoch: int
     train_loss: float
     val_loss: float

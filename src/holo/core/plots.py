@@ -370,6 +370,7 @@ def plot_violin_depth_bins(
     title,
     path_to_plot,
 ):
+    """Plot a violin distribution of prediction errors grouped by depth bins."""
     # sanity
     z_true_m = np.array(plot_info.z_true_m)
     z_pred_m = np.array(plot_info.z_pred_m)

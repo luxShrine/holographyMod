@@ -32,6 +32,7 @@ class JsonFormatter(jsonlogger.JsonFormatter):
     """Add milliseconds and process name."""
 
     def add_fields(self, log_record, record, message_dict):
+        """Inject extra fields used by the JSON logger."""
         super().add_fields(log_record, record, message_dict)
         log_record["msecs"] = record.msecs
         log_record["line"] = record.lineno
