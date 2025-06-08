@@ -8,12 +8,13 @@ import numpy as np
 import numpy.typing as npt
 import torch
 from PIL.Image import Image as ImageType
+from pint.facets.plain.quantity import PlainQuantity
 from torch.nn import Module
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, Dataset
 
 import holo.infra.util.paths as paths
-from holo.infra.util.types import Q_, AnalysisType, DisplayType, UserDevice
+from holo.infra.util.types import AnalysisType, DisplayType, UserDevice
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ class AutoConfig:
                 actual_device = "cuda"
             else:
                 logger.warning("CUDA specified but not available, using CPU instead.")
-        logger.info(f"Using device: {actual_device}")
+        logger.debug(f"Using device: {actual_device}")
         return actual_device
 
 
@@ -109,7 +110,7 @@ class AutoConfig:
 class CoreTrainer:
     """Class to hold specifically all the training information."""
 
-    evaluation_metric: npt.NDArray[np.float64] | float
+    evaluation_metric: npt.NDArray[np.float64] | npt.NDArray[np.intp]
     model: Module
     loss_fn: Any
     optimizer: Optimizer
@@ -118,8 +119,8 @@ class CoreTrainer:
     train_loader: DataLoader[tuple[ImageType, np.float64]]
     val_ds: Dataset[tuple[ImageType, np.float64]]
     val_loader: DataLoader[tuple[ImageType, np.float64]]
-    z_sig: Q_
-    z_mu: Q_
+    z_sig: PlainQuantity[float]
+    z_mu: PlainQuantity[float]
 
 
 @dataclass

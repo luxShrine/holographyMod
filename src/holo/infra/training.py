@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import Any, cast, override
+from typing import TYPE_CHECKING, Any, cast, override
 
 import numpy as np
 import numpy.typing as npt
@@ -28,9 +28,12 @@ from holo.infra.tests import test_base
 from holo.infra.util.prog_helper import setup_training_progress
 from holo.infra.util.types import Q_, AnalysisType, Np1Array64, u
 
+if TYPE_CHECKING:
+    from pint.facets.plain.quantity import PlainQuantity
+
 logger = logging.getLogger(__name__)
 
-MAX_MODEL_HISTORY: int = 2
+MAX_MODEL_HISTORY: int = 4
 
 
 class TransformedDataset(Dataset[tuple[ImageType, np.float64]]):
@@ -50,13 +53,13 @@ class TransformedDataset(Dataset[tuple[ImageType, np.float64]]):
 
     def __init__(
         self,
-        subset_obj: Subset[tuple[ImageType, np.float64]],
+        subset_obj: Subset[tuple[ImageType, np.float64 | int]],
         img_transform: v2.Compose | None = None,
         label_transform: v2.Lambda | None = None,
     ) -> None:
         """Initialize the wrapper with optional image and label transforms."""
         # NOTE: v2 transformation classes != typical torch transformation classes
-        self.subset_obj: Subset[tuple[ImageType, np.float64]] = subset_obj
+        self.subset_obj: Subset[tuple[ImageType, np.float64 | int]] = subset_obj
         self.img_transform: v2.Compose | None = img_transform
         self.label_transform: v2.Lambda | None = label_transform
 
@@ -108,7 +111,7 @@ def train_autofocus(a_config: AutoConfig, path_ckpt: str | None = None) -> PlotP
 
     test_training_config(train_cfg, a_config)
 
-    # train/validate, one epoch,
+    # train/validate, for all epochs
     avg_loss_train, avg_loss_val, metric_val, best_val_metric = train_eval_epoch(
         train_cfg, a_config, best_val_metric, ckpt
     )
@@ -224,8 +227,8 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
                 + f"Setting to {core_z_sig_val} for normalization."
             )
 
-        core_z_mu = Q_(core_z_mu_val, u.m)
-        core_z_sig = Q_(core_z_sig_val, u.m)
+        core_z_mu: PlainQuantity[float] = Q_(core_z_mu_val, u.m)
+        core_z_sig: PlainQuantity[float] = Q_(core_z_sig_val, u.m)
 
         def _reg_label_transform_fn(z_raw_phys_val: np.float32) -> Tensor:
             """Pass in physical value, return normalized z tensor."""
@@ -355,7 +358,7 @@ def _create_model(
 def test_training_config(t_cfg: CoreTrainer, a_cfg: AutoConfig) -> None:
     """Validate that the training configuration is well formed."""
     # depends on analysis
-    type_eval: type[npt.NDArray[np.float64] | float] = type(t_cfg.evaluation_metric)
+    type_eval: type[npt.NDArray[np.float64] | npt.NDArray[np.intp]] = type(t_cfg.evaluation_metric)
     if a_cfg.analysis is a_cfg.analysis.CLASS:
         # must be bins, check how many, type
         assert isinstance(t_cfg.evaluation_metric, np.ndarray), (
@@ -363,7 +366,7 @@ def test_training_config(t_cfg: CoreTrainer, a_cfg: AutoConfig) -> None:
         )
     else:
         # TODO: create test for regrsession <05-25-25, luxShrine>
-        assert isinstance(t_cfg.evaluation_metric, float), (
+        assert isinstance(t_cfg.evaluation_metric, np.ndarray), (
             f"evaluation_metric is not float, found {type_eval}"
         )
 
@@ -410,7 +413,7 @@ def train_eval_epoch(
     train_loss_start: float = 0 if ckpt is None else ckpt.train_loss
     val_loss_start: float = 0 if ckpt is None else ckpt.val_loss
 
-    _ = progress_bar.add_task(
+    epoch_task = progress_bar.add_task(
         "Epoch",
         total=a_cfg.epoch_count,
         train_loss=train_loss_start,
@@ -431,6 +434,7 @@ def train_eval_epoch(
     avg_loss_train: float = train_loss_start
     avg_loss_val: float = val_loss_start
     metric_val = 0 if ckpt is None else ckpt.val_metric
+    metric_val_hist: list[float] = []
     labels_tensor: Tensor = torch.empty([1, 1]) if ckpt is None else ckpt.l_tens.to(a_cfg.device())
 
     with progress_bar:  # allow for tracking of progress
@@ -459,9 +463,27 @@ def train_eval_epoch(
 
             save_best_model_flag = False
             assert isinstance(metric_val, float)
+
+            # store metric val from epochs previous
+            metric_val_hist.append(metric_val)
+            # dummy variable until it is filled out
+            perc_diff_hist_three = 1
+            perc_diff_hist_five = 1
+
             if a_cfg.analysis == AnalysisType.REG:
                 # Lower MAE is better
                 logger.debug(f"At {epoch} / {a_cfg.epoch_count} Val Acc: {metric_val * 100:.2f} %")
+
+                # remove more than five values, goes past index needed
+                if len(metric_val_hist) >= 6:
+                    _ = metric_val_hist.pop(0)
+                    # get percent diff to measure improvement, desire current < previous
+                    perc_diff_hist_three = (metric_val_hist[3] - metric_val) / (
+                        (metric_val_hist[3] + metric_val) / 2
+                    )
+                    perc_diff_hist_five = (metric_val_hist[5] - metric_val) / (
+                        (metric_val_hist[5] + metric_val) / 2
+                    )
 
                 if metric_val < best_val_metric:
                     save_best_model_flag = True
@@ -469,9 +491,49 @@ def train_eval_epoch(
                 # Higher Accuracy is better
                 logger.debug(f"At {epoch} / {a_cfg.epoch_count} Val MAE: {metric_val:.9f} µm")
 
+                if len(metric_val_hist) >= 6:
+                    _ = metric_val_hist.pop(0)
+                    # get percent diff to measure improvement, desire current > previous
+                    perc_diff_hist_three: float = metric_val - metric_val_hist[3] / (
+                        (metric_val_hist[3] + metric_val) / 2
+                    )
+                    perc_diff_hist_five: float = metric_val - metric_val_hist[5] / (
+                        (metric_val_hist[5] + metric_val) / 2
+                    )
+
                 if metric_val > best_val_metric:
                     best_val_metric = metric_val
                     save_best_model_flag = True
+
+            # -- test if model is still improving ------------------------------------------------
+            EXPECTED_IMPROVEMENT_PERC: float = 0.01
+
+            improvement_over_three_epoch: bool = False
+
+            if perc_diff_hist_three < EXPECTED_IMPROVEMENT_PERC:
+                improvement_over_three_epoch = True
+
+            # if epoch is > N/5 and no improvement over three epochs, display error
+            if (
+                epoch > (a_cfg.epoch_count / 5)
+                and len(metric_val_hist) >= 6
+                and not improvement_over_three_epoch
+            ):
+                print(
+                    f"Small or no improvement of metric val: {perc_diff_hist_three}"
+                    + f" from epoch {epoch - 3} to epoch {epoch}"
+                )
+                logger.debug(
+                    f"epoch {epoch - 3} metric_val_hist[3] {metric_val_hist[3]};"
+                    + f" epoch {epoch} metric_val {metric_val}"
+                )
+                # if after 5 epochs, stop training
+                if perc_diff_hist_five < EXPECTED_IMPROVEMENT_PERC:
+                    print(
+                        "[black on red] Training stopping, little to no improvement after "
+                        + "five epochs"
+                    )
+                    break
 
             # Save best model, if metric is better
             if save_best_model_flag:
@@ -481,7 +543,7 @@ def train_eval_epoch(
                 best_model_name: str = (
                     path_to_model.name.removesuffix(".pth") + evaluation_sci_notation + ".pth"
                 )
-                path_to_model_detail: Path = path_to_model.parent / Path(best_model_name)
+                path_to_model_detail = path_to_model.parent / Path(best_model_name)
 
                 # clean up directory if needed to preserve storage
                 # if checkpoint folder has > MAX_MODEL_HISTORY, remove oldest
@@ -539,6 +601,15 @@ def train_eval_epoch(
                     "val_metric": metric_val,
                 },
                 path_to_checkpoint,
+            )
+
+            progress_bar.update(
+                epoch_task,
+                advance=1,
+                train_loss=avg_loss_train,
+                val_loss=avg_loss_val,
+                val_err=metric_val,
+                lr=epoch_cfg.optimizer.param_groups[0]["lr"],
             )
 
     return avg_loss_train, avg_loss_val, metric_val, best_val_metric
@@ -693,14 +764,12 @@ def load_ckpt(path_ckpt: str, optimizer: Optimizer, model: nn.Module, device: st
     checkpoint: dict[str, Any] = torch.load(path_ckpt, weights_only=True, map_location=device)
     # returns unexepected keys or missing keys for the model if either case occurs
     missing_keys = model.load_state_dict(checkpoint["model_state_dict"])
-    # must move model to expected device before loading optimiser
+    # must move model onto expected device before loading optimiser
     _ = model.to(device)
     if len(missing_keys) > 0:
         logger.info(f"{missing_keys}")
 
-    print(optimizer)
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    print(optimizer)
     ckpt: Checkpoint = Checkpoint(
         epoch=checkpoint["epoch"],
         train_loss=checkpoint["train_loss"],

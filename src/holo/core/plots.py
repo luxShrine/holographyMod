@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 def _save_show_plot(
     in_fig: Figure | go.Figure,
-    display: DisplayType,
+    display: DisplayType | str,
     title: str | None,
     path_to_plot: str = "",
 ):
@@ -298,7 +298,8 @@ def plot_residual_vs_true(plot_info, title, path_to_plot):
     xc_list: list[np.float32] = []
     # The loop should go up to len(bins_m_np) to cover all bins defined by linspace.
     # np.digitize with n_bins points creates n_bins-1 intervals.
-    # Iterating from 1 to len(bins_m_np) (or n_bins) means checking indices 1 to n_bins-1 based on digitize's output.
+    # Iterating from 1 to len(bins_m_np) (or n_bins) means checking indices 1 to
+    # n_bins-1 based on digitize's output.
     for i in track(range(1, len(bins_m_np)), description="Bin checking (Plotly)..."):
         mask: np.intp = bin_idx == i
         if mask.any():  # at least one sample in the bin
@@ -446,16 +447,7 @@ def plot_amp_phase(
     path_to_plot: str = "phase_amp.png",
     display: DisplayType = DisplayType.SHOW,
 ):
-    """Visualise amplitude & phase reconstruction.
-
-    Args:
-        amp_recon, phase_recon : arrays
-            Results from your Fresnel‑solver.
-        amp_true, phase_true : arrays or None
-            Provide these **only if** you truly know the ground‑truth field.
-            When they are None the function hides GT / error panels.
-
-    """
+    """Visualise amplitude & phase reconstruction."""
     title = "amp phase"
     amp_recon: npt.NDArray[Any]
     phase_recon: npt.NDArray[Any]

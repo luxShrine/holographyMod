@@ -23,7 +23,7 @@ HOLO_DEF = paths.MW_data()
 
 
 # TODO: transform section not needed
-class HologramFocusDataset(Dataset[tuple[ImageType, np.float64]]):
+class HologramFocusDataset(Dataset[tuple[ImageType, np.float64 | int]]):
     """Store dataset information relevant to reconstruction."""
 
     def __init__(
@@ -109,7 +109,7 @@ class HologramFocusDataset(Dataset[tuple[ImageType, np.float64]]):
         return len(self.records)
 
     @override
-    def __getitem__(self, idx: int) -> tuple[ImageType, np.float64]:
+    def __getitem__(self, idx: int) -> tuple[ImageType, np.float64 | int]:
         """Return image and z depth value."""
         # ensure image is read properly
         try:
@@ -118,7 +118,9 @@ class HologramFocusDataset(Dataset[tuple[ImageType, np.float64]]):
             logger.exception(f"Error loading image {self.paths[idx]}: {e}")
             raise
         # Continuous if regression, bins if classification
-        label = self.z_m[idx] if self.mode == AnalysisType.REG else self.z_bins[idx]
+        label: np.float64 | int = (
+            self.z_m[idx] if self.mode == AnalysisType.REG else self.z_bins[idx]
+        )
 
         # Return quantities for clarity
         return (img, label)

@@ -103,7 +103,7 @@ def init_logging() -> None:
     # logging.getLogger("click").setLevel(logging.WARNING)
 
     _listener.start()
-    atexit.register(_listener.stop)
+    _ = atexit.register(_listener.stop)
 
     init_logging._configured = True  # type: ignore[attr-defined]
 
