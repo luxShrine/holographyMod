@@ -1,19 +1,24 @@
 import json
 import logging
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
 import numpy.typing as npt
 import torch
 from PIL.Image import Image as ImageType
+from pint.facets.plain.quantity import PlainQuantity
 from torch.nn import Module
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, Dataset
 
-from holo.infra.util.types import Q_, AnalysisType, DisplayType, UserDevice
+import holo.infra.util.paths as paths
+from holo.infra.util.types import AnalysisType, DisplayType, UserDevice
 
 logger = logging.getLogger(__name__)
+
+HOLO_DEF = paths.MW_data()
 
 
 @dataclass
@@ -48,9 +53,9 @@ class AutoConfig:
     device_user: UserDevice = UserDevice.CUDA
     epoch_count: int = 10
     grayscale: bool = True
-    meta_csv_name: str = "ODP-DLHM-Database.csv"
+    meta_csv_strpath: str = (HOLO_DEF / Path("ODP-DLHM-Database.csv")).as_posix()
     num_classes: int = 1
-    num_workers: int = 0
+    num_workers: int = 2
     opt_lr: float = 5e-5
     opt_weight_decay: float = 1e-2
     out_dir: str = "checkpoints"
@@ -72,7 +77,7 @@ class AutoConfig:
                 "batch_size": self.batch_size,
                 "crop_size": self.crop_size,
                 "grayscale": self.grayscale,
-                "meta_csv_name": self.meta_csv_name,
+                "meta_csv_strpath": self.meta_csv_strpath,
                 "num_workers": self.num_workers,
                 "num_classes": self.num_classes,
                 "sch_factor": self.sch_factor,
@@ -97,7 +102,7 @@ class AutoConfig:
                 actual_device = "cuda"
             else:
                 logger.warning("CUDA specified but not available, using CPU instead.")
-        logger.info(f"Using device: {actual_device}")
+        logger.debug(f"Using device: {actual_device}")
         return actual_device
 
 
@@ -105,7 +110,7 @@ class AutoConfig:
 class CoreTrainer:
     """Class to hold specifically all the training information."""
 
-    evaluation_metric: npt.NDArray[np.float64] | float
+    evaluation_metric: npt.NDArray[np.float64] | npt.NDArray[np.intp]
     model: Module
     loss_fn: Any
     optimizer: Optimizer
@@ -114,24 +119,24 @@ class CoreTrainer:
     train_loader: DataLoader[tuple[ImageType, np.float64]]
     val_ds: Dataset[tuple[ImageType, np.float64]]
     val_loader: DataLoader[tuple[ImageType, np.float64]]
-    z_sig: Q_
-    z_mu: Q_
+    z_sig: PlainQuantity[float]
+    z_mu: PlainQuantity[float]
 
 
 @dataclass
 class PlotPred:
     """Class for storing plotting information."""
 
-    z_test_pred: list[Any]
-    z_test: list[Any]
-    z_train_pred: list[Any]
-    z_train: list[Any]
-    zerr_train: list[Any]
-    zerr_test: list[Any]
-    bin_edges: npt.NDArray[np.float64] | None
+    z_test_pred: list[np.float64]
+    z_test: list[np.float64]
+    z_train_pred: list[np.float64]
+    z_train: list[np.float64]
+    zerr_train: list[np.float64]
+    zerr_test: list[np.float64]
+    bin_edges: list[np.float64] | None
     title: str
     path_to_plot: str
-    display: DisplayType
+    display: DisplayType | str
 
 
 @dataclass
@@ -146,6 +151,18 @@ class GatherZ:
     bin_centers_phys: npt.NDArray[np.float64] | None = None
     z_mu_phys: float | None = None
     z_sig_phys: float | None = None
+
+
+@dataclass
+class Checkpoint:
+    """Serialized training state used for resuming."""
+    epoch: int
+    train_loss: float
+    val_loss: float
+    val_metric: float
+    bin_centers: npt.NDArray[np.float64] | None
+    num_classes: int
+    l_tens: torch.Tensor
 
 
 def load_obj(

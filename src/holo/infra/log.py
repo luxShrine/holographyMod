@@ -32,6 +32,7 @@ class JsonFormatter(jsonlogger.JsonFormatter):
     """Add milliseconds and process name."""
 
     def add_fields(self, log_record, record, message_dict):
+        """Inject extra fields used by the JSON logger."""
         super().add_fields(log_record, record, message_dict)
         log_record["msecs"] = record.msecs
         log_record["line"] = record.lineno
@@ -102,7 +103,7 @@ def init_logging() -> None:
     # logging.getLogger("click").setLevel(logging.WARNING)
 
     _listener.start()
-    atexit.register(_listener.stop)
+    _ = atexit.register(_listener.stop)
 
     init_logging._configured = True  # type: ignore[attr-defined]
 

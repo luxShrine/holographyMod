@@ -44,7 +44,6 @@ def gather_z_preds(
     """
     _: Module = model.eval()  # set model into evaluation rather than training mode
     _ = model.to(usr_device)  # ensure model is on expected device
-    logger.info(f"Using: {usr_device}, for recovering Z values.")
     eval_z_pred_list: list[Np1Array64] = []
     eval_z_true_list: list[Np1Array64] = []
     train_z_pred_list: list[Np1Array64] = []
@@ -52,16 +51,16 @@ def gather_z_preds(
 
     with torch.no_grad():
         for loader in [t_loader, v_loader]:
-            for imgs, labels in track(loader, "Gathering z predictions..."):
+            for imgs, labels in track(loader, f"Gathering z predictions using {usr_device}..."):
                 # non_blocking means allowing for multiple tensors to be sent to device
-                imgs = imgs.to(usr_device, non_blocking=True)
-                labels_device = labels.to(usr_device, non_blocking=True)
-                assert next(model.parameters()).device == imgs.device == labels.device, (
-                    f"Images {imgs.device}, labels {labels.device}, or model {next(model.parameters()).device} not on same device."
+                imgs_tens = imgs.to(usr_device, non_blocking=True)
+                labels_tens = labels.to(usr_device, non_blocking=True)
+                assert next(model.parameters()).device == imgs_tens.device == labels_tens.device, (
+                    f"Images {imgs_tens.device}, labels {labels_tens.device}, or model {next(model.parameters()).device} not on same device."
                 )
 
                 # pass in data to model
-                preds = model(imgs)
+                preds = model(imgs_tens)
                 # convert back to physical units
                 if analysis.value == AnalysisType.REG.value:
                     if z_mu_phys is None or z_sig_phys is None:
@@ -71,7 +70,7 @@ def gather_z_preds(
 
                     # bring predictions back to cpu
                     preds_phys_batch = preds.squeeze().cpu().numpy() * z_sig_phys + z_mu_phys
-                    true_phys_batch = labels.cpu().numpy() * z_sig_phys + z_mu_phys
+                    true_phys_batch = labels_tens.cpu().numpy() * z_sig_phys + z_mu_phys
 
                 elif analysis.value == AnalysisType.CLASS.value:
                     if bin_centers_phys is None:
@@ -82,7 +81,7 @@ def gather_z_preds(
                     # dimension/axis. Here it grabs the indicies of the predictions,
                     # which ought to correspond to the integer bins in the label.
                     preds_arr_indices = preds.argmax(dim=1).cpu().numpy()
-                    labels_arr_indices = labels_device.cpu().numpy()
+                    labels_arr_indices = labels_tens.cpu().numpy()
                     preds_phys_batch = bin_centers_phys[preds_arr_indices]
                     true_phys_batch = bin_centers_phys[labels_arr_indices]
                 else:

@@ -22,83 +22,81 @@ def path_check(**kwargs: Path):
             raise e
 
 
-# ruff: noqa: D103
-# Absolute path to the top level of the repository
-# root = Path(__file__).resolve().parents[2].absolute()
 def repo_root() -> Path:
+    """Return the path to the repository root."""
     return Path(__file__).resolve().parents[4].absolute()
 
 
-# Absolute path to the `src` folder
 def src_root() -> Path:
+    """Return the path to the ``src`` directory."""
     return repo_root() / "src"
 
 
-# Absolute path to the `src/data` folder (contains datasets)
 def data_root() -> Path:
+    """Return the directory that holds datasets (src/data)."""
     return src_root() / "data"
 
 
-# Absolute path to the bridge data
 def bridge100k_data() -> Path:
+    """Path to the ``bridge100k`` dataset (src/data/bridge100k)."""
     return data_root() / "bridge100k"
 
 
-# Absolute path to the Brownian_motion data
 def brownian_data() -> Path:
+    """Path to the Brownian motion dataset."""
     return data_root() / "Brownian_Motion_Strouhal_Analysis_Data"
 
 
-# Absolute path to the primary train data
 def MW_data() -> Path:
+    """Path to the primary training dataset (src/data/MW-Dataset)."""
     return data_root() / "MW-Dataset"
 
 
-# Absolute path to the norm/thal cells data
 def NTcells_data() -> Path:
+    """Path to the normal and thalassemic cells dataset."""
     return data_root() / "normal_and_thalassemic_cells"
 
 
-# Absolute path to the phase only hologram data
 def phase_data() -> Path:
+    """Path to the phase-only hologram dataset."""
     return data_root() / "Phase_Only_Holograms"
 
 
-# Absolute path to the maynooth data
 def maynooth_data() -> Path:
+    """Path to the Maynooth dataset."""
     return data_root() / "DHM_1"
 
 
-# Absolute path to the DHM data
 def DHM_1_data() -> Path:
+    """Path to the DHM dataset."""
     return data_root() / "DHM_1"
 
 
-# Absolute path to the Keratinocyte HaCaT
 def keratinocyte_data() -> Path:
+    """Path to the Keratinocyte HaCaT timelapse dataset."""
     return DHM_1_data() / "DHM" / "Timelapse" / "Keratinocyte cell line HaCaT"
 
 
-# Absolute path to the `src/static` folder (contains static images)
 def static_root() -> Path:
+    """Return path to the directory storing static images (src/static)."""
     return src_root() / "static"
 
 
-# Absolute path to the `src/holo` folder (contains holo package)
 def holo_root() -> Path:
+    """Return path to the holo package root (src/holo)."""
     return src_root() / "holo"
 
 
-# Absolute path to the `src/tex` folder (contains the paper)
 def tex_root() -> Path:
+    """Return path to the ``tex`` directory (src/tex)."""
     return src_root() / "tex"
 
 
-# Absolute path to the `src/tex/figures` folder (contains figure output)
 def figures_tex() -> Path:
+    """Path where LaTeX figures are written (src/tex/figures)."""
     return tex_root() / "figures"
 
 
-# Absolute path to the `src/tex/output` folder (contains other user-defined output)
 def output_tex() -> Path:
+    """Path for miscellaneous LaTeX output files (src/tex/output)."""
     return tex_root() / "output"

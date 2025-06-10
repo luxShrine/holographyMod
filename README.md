@@ -20,6 +20,26 @@ source .venv/bin/activate # bash
 pip install -e . # install module to venv
 ```
 
+**Setting Up Your Data:**
+
+To use you own data you must provide a `.csv` file in the root of the dataset directory. The CSV file must contain the following:
+- Column's with title's: Path;Wavelength;L_value;z_value
+- Each column thus contains information corresponding to each image in the dataset:
+    - Paths to each image relative to the CSV file 
+    - Wavelength used in imaging (mm)
+    - Distance from the point-source to the sample (mm)
+    - True depth/z value, the distance from the sensor to the sample (mm)
+
+If you do not have a CSV file with this information already setup, you can instead provide the information in the form of a text file. To do so, 
+1. Organize the dataset by folders that contain shared properties
+2. Create an `info.txt` file in a directory alongside the images, have it contain the expected fields. For example:
+```
+Wavelength = 500
+L_value = 18.96
+z_value = 0.521
+```
+3. The path will be gathered automatically, thus there is no need to provide it. Then run the train command with `--create-csv` to have the program create the CSV file and perform training.
+
 **Usage**:
 
 ```console
@@ -39,7 +59,6 @@ holo [OPTIONS] COMMAND [ARGS]...
 - `train`: Train the autofocus model based on...
 - `plot-train`: Plot the data saved from autofocus training.
 - `reconstruction`: Perform reconstruction on an hologram.
-- `create-meta`: Build CSV containing metadata of images in...
 
 ## `train`
 
@@ -124,25 +143,6 @@ holo reconstruction [OPTIONS] [IMG_FILE_PATH] [MODEL_PATH] [BACKBONE] [CROP_SIZE
 - `[WAVELENGTH]`: Wavelength of light used to capture the image (m) [default: 5.3e-07]
 - `[Z]`: Distance of measurement (m) [default: 0.02]
 - `[DX]`: Size of image px (m) [default: 1e-06]
-
-**Options**:
-
-- `--help`: Show this message and exit.
-
-## `create-meta`
-
-Build CSV containing metadata of images in hologram directory.
-
-**Usage**:
-
-```console
-holo create-meta [OPTIONS] HOLOGRAM_DIRECTORY OUT_DIRECTORY
-```
-
-**Arguments**:
-
-- `HOLOGRAM_DIRECTORY`: [required]
-- `OUT_DIRECTORY`: [required]
 
 **Options**:
 
