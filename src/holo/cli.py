@@ -29,7 +29,7 @@ def cli():
 @cli.command()
 @click.argument(
     "ds_root",
-    type=click.Path(exists=True, file_okay=False),
+    type=click.Path(exists=False, file_okay=False),
 )
 @click.option(
     "--csv-name",
