@@ -9,7 +9,7 @@ import numpy.typing as npt
 from holo.infra.dataclasses import PlotPred, load_obj, save_obj
 from holo.infra.log import init_logging
 from holo.infra.util.image_processing import build_metadata_csv
-from holo.infra.util.paths import MW_data, path_check, static_root
+from holo.infra.util.paths import MW_data, data_root, path_check, static_root
 from holo.infra.util.types import AnalysisType, DisplayType, UserDevice
 
 # Must be called before anything logs
@@ -27,22 +27,84 @@ def cli():
 
 # TODO: load settings from external file rather than from cli
 @cli.command()
-@click.argument("ds_root")
-@click.option(
-    "--meta_csv_name", default="ODP-DLHM-Database.csv", help="Path to the metadata CSV file."
+@click.argument(
+    "ds_root",
+    type=click.Path(exists=True, file_okay=False),
 )
-@click.option("--num_classes", default=10, help="Number of classifications.")
-@click.option("--out_dir", default="checkpoints", help="Directory to save checkpoints and logs.")
-@click.option("--backbone", default="efficientnet_b4", help="Model backbone name.")
-@click.option("--crop_size", default=224, help="Size to crop images to.")
-@click.option("--val_split", default=0.2, help="Fraction of data for validation.")
-@click.option("--batch_size", default=16, help="Training batch size.")
-@click.option("--ep", default=10, help="Number of training epochs.")
-@click.option("--opt_lr", default=5e-5, help="How fast should the model change epoch to epoch")
-@click.option("--device_user", default="cuda", help="Device ('cuda' or 'cpu').")
-@click.option("--analysis", default=True, help="Change analysis type to classification")
-@click.option("--seed", default=True, help="Keep the random seed consistent.")
-@click.option("--cont_train", default=False, help="Continue from checkpoint")
+@click.option(
+    "--csv-name",
+    "meta_csv_name",
+    type=click.Path(dir_okay=False),
+    default="ODP-DLHM-Database.csv",
+    help="Path to the metadata CSV file.",
+)
+@click.option(
+    "--bins",
+    "num_classes",
+    default=10,
+    type=click.IntRange(1, 100),
+    help="Number of classifications, set to 1 for regression training.",
+)
+@click.option(
+    "--out",
+    "out_dir",
+    type=click.Path(file_okay=False),
+    default="checkpoints",
+    help="Directory to save checkpoints and logs.",
+)
+@click.option(
+    "--model",
+    "backbone",
+    type=click.Choice(["efficientnet", "vit", "resnet50"]),
+    default="efficientnet",
+    help="Model backbone name.",
+)
+@click.option(
+    "--crop",
+    "crop_size",
+    default=224,
+    type=click.IntRange(20, 516),
+    help="Size to crop images to.",
+)
+@click.option(
+    "--split",
+    "val_split",
+    default=0.2,
+    type=click.FloatRange(0.001, 1),
+    help="Fraction of data for validation.",
+)
+@click.option(
+    "--batch",
+    "batch_size",
+    default=16,
+    type=click.IntRange(1, 64),
+    help="Training batch size.",
+)
+@click.option(
+    "--ep",
+    "epoch_count",
+    default=10,
+    type=click.IntRange(1, 1000),
+    help="Number of training epochs.",
+)
+@click.option(
+    "--lr",
+    "learning_rate",
+    default=5e-5,
+    type=click.FloatRange(1e-6, 1e2),
+    help="How fast should the model change epoch to epoch",
+)
+@click.option(
+    "--device",
+    "device_user",
+    default="cuda",
+    type=click.Choice(["cuda", "cpu"]),
+    help="Device for training.",
+)
+@click.option("--fixed-seed", "fixed_seed", default=True, help="Keep the random seed consistent.")
+@click.option("--continue", "continue_train", default=False, help="Continue from checkpoint")
+@click.option("--create-csv", "create_csv", default=False, help="Create a CSV for data.")
+@click.option("--sample", "use_sample_data", default=False, help="Use sample data provided.")
 def train(
     ds_root: Path,
     meta_csv_name: str,
@@ -52,12 +114,13 @@ def train(
     crop_size: int,
     val_split: float,
     batch_size: int,
-    ep: int,
-    opt_lr: float,
+    epoch_count: int,
+    learning_rate: float,
     device_user: str,
-    analysis: bool,
-    seed: bool,
-    cont_train: bool,
+    fixed_seed: bool,
+    continue_train: bool,
+    create_csv: bool,
+    use_sample_data: bool,
 ) -> None:
     """Train the autofocus model based on supplied dataset."""
     from holo.infra.dataclasses import AutoConfig
@@ -65,11 +128,12 @@ def train(
 
     logger = logging.getLogger(__name__)
 
-    auto_method = AnalysisType.CLASS if analysis else AnalysisType.REG
-
+    auto_method = AnalysisType.CLASS if num_classes != 1 else AnalysisType.REG
     logger.info(f"Training type: {auto_method}.")
 
-    path_ckpt: str | None = None if cont_train is False else "./checkpoints/latest_checkpoint.tar"
+    path_ckpt: str | None = (
+        None if continue_train is False else "./checkpoints/latest_checkpoint.tar"
+    )
 
     dev = UserDevice.CUDA if device_user == "cuda" else UserDevice.CPU
 
@@ -81,18 +145,39 @@ def train(
         )
         crop_size = 224
 
-    if (ds_root / Path(meta_csv_name)).exists():
-        meta_csv_strpath = (ds_root / Path(meta_csv_name)).as_posix()
-        logger.info(f" path to csv exists {meta_csv_name}")
-    else:
-        new_def_path: Path = MW_data() / Path(meta_csv_name)
-        logger.error(f" path to csv does not exist, using default paths {new_def_path}")
-        logger.warning(f"Checking {new_def_path}")
-        if new_def_path.exists():
-            meta_csv_strpath = (new_def_path).as_posix()
-            logger.info(f"{meta_csv_strpath} exists, continuing...")
+    # detect if csv exits, if it doesn't attempt to remedy
+    # TODO: can be incorporated into click, not currently used
+    create_csv_option: bool = create_csv
+    use_sample: bool = use_sample_data
+    csv_exists: bool = (ds_root / Path(meta_csv_name)).exists()
+    csv_name: str = meta_csv_name
+    if csv_exists:
+        logger.info(f"Path to csv exists {csv_name}")
+    elif ds_root.exists() and not Path(meta_csv_name).exists():
+        logger.error(f"Could not find {meta_csv_name} in root of dataset folder {ds_root}.")
+        create_csv_option = click.confirm("Attempt to create csv file from ds_root?", default=True)
+
+    # see if user wants to use sample data, if not abort
+    if not create_csv_option and not csv_exists:
+        logger.error(f"Could not find dataset folder {ds_root}.")
+        use_sample = click.confirm("Use sample data instead?", default=True, abort=True)
+
+    if create_csv_option:
+        csv_name: str = click.prompt("Enter a filename for csv:", type=click.STRING)
+        create_meta(ds_root, csv_name)
+
+    # ensure the user has the sample data
+    if use_sample:
+        # TODO: add to git this default path with sample data
+        sample_path: Path = data_root() / Path("MW_Dataset_Sample") / Path("ODP-DLHM-Database.csv")
+        logger.warning(f"Ensuring {sample_path} exists...")
+        if sample_path.exists():
+            meta_csv_strpath: str = sample_path.as_posix()
+            logger.info(f"{meta_csv_strpath} exists, continuing with sample data...")
         else:
-            raise Exception(f" path to csv still does not exist: {new_def_path}")
+            raise Exception(f"Path to sample data does not exist: {sample_path}")
+    else:
+        meta_csv_strpath = (ds_root / Path(csv_name)).as_posix()
 
     autofocus_config = AutoConfig(
         out_dir=out_dir,
@@ -100,13 +185,13 @@ def train(
         num_classes=num_classes,
         backbone=backbone,
         batch_size=batch_size,
-        epoch_count=ep,
+        epoch_count=epoch_count,
         crop_size=crop_size,
-        opt_lr=opt_lr,
+        opt_lr=learning_rate,
         val_split=val_split,
         device_user=dev,
         analysis=auto_method,
-        fixed_seed=seed,
+        fixed_seed=fixed_seed,
     )
 
     plot_info = train_autofocus(autofocus_config, path_ckpt)
@@ -242,18 +327,15 @@ def reconstruction(
     )
 
 
-@cli.command()
-def create_meta(hologram_directory: str, out_directory: str):
+def create_meta(hologram_directory: Path, csv_name: str):
     """Build CSV containing metadata of images in hologram directory."""
     logger = logging.getLogger(__name__)
 
     logger.info("Creating proper CSV...")
-    hologram_dir = Path(hologram_directory)
-    out_dir = Path(out_directory)
 
     _ = build_metadata_csv(
-        hologram_dir,
-        out_dir,
+        hologram_directory,
+        csv_name,
     )
 
 
