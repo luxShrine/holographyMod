@@ -280,8 +280,8 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
         pin_memory=a_cfg.device() == "cuda",
     )
     logger.debug("Dataloaders created successfully")
-    test_loader(eval_dl)
-    test_loader(train_dl)
+    _ = test_loader(eval_dl)
+    _ = test_loader(train_dl)
 
     # loss_fn = nn.CrossEntropyLoss() if a_cfg.analysis == AnalysisType.CLASS else nn.SmoothL1Loss()
     loss_fn = nn.CrossEntropyLoss() if a_cfg.analysis == AnalysisType.CLASS else nn.SmoothL1Loss()
@@ -438,7 +438,6 @@ def train_eval_epoch(
     )
 
     _ = epoch_cfg.model.train()
-    loss_sum_val: float = 0.0  # Sum of losses for all samples
     total_samples_for_loss: int = 0  # Denominator for average loss
     avg_loss_train: float = train_loss_start
     avg_loss_val: float = val_loss_start
@@ -472,7 +471,7 @@ def train_eval_epoch(
                         avg_loss_val, labels_tensor, total_samples_for_loss, metric_val = (
                             epoch_loop(a_cfg, epoch_cfg, progress_bar, val_task, "val")
                         )
-                        avg_loss_val = loss_sum_val / total_samples_for_loss
+                        avg_loss_val = avg_loss_val / total_samples_for_loss
 
             save_best_model_flag = False
             assert isinstance(metric_val, float)
