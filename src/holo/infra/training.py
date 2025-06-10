@@ -10,9 +10,9 @@ import torch.optim as optim
 
 # from line_profiler import profile
 from PIL.Image import Image as ImageType
-from rich import print
 from rich.progress import (
     Progress,
+    TaskID,
 )
 from timm import create_model
 from torch import Tensor
@@ -24,9 +24,10 @@ from torchvision.transforms import v2
 from holo.core.metrics import gather_z_preds
 from holo.infra.dataclasses import AutoConfig, Checkpoint, CoreTrainer, GatherZ, PlotPred
 from holo.infra.datamodules import HologramFocusDataset
+from holo.infra.log import console_ as console
 from holo.infra.tests import test_base
 from holo.infra.util.prog_helper import setup_training_progress
-from holo.infra.util.types import Q_, AnalysisType, Np1Array64, u
+from holo.infra.util.types import Q_, AnalysisType, Np1Array64, check_dtype, u
 
 if TYPE_CHECKING:
     from pint.facets.plain.quantity import PlainQuantity
@@ -310,25 +311,8 @@ def transform_ds(base: HologramFocusDataset, a_cfg: AutoConfig) -> CoreTrainer:
         z_sig=core_z_sig,
         z_mu=core_z_mu,
     )
-    print("[black on green]--- Epoch Variables Initialization Complete ---")
+    console.rule("[black on green] Epoch Variables Initialization Complete ")
     return core_trainer_config
-
-
-def test_loader(ds_loader: DataLoader[tuple[ImageType, np.float64]]) -> None:
-    """Attempt to grab image and label."""
-    try:
-        train_features, train_labels = next(iter(ds_loader))
-        logger.debug(f"Feature batch shape: {train_features.size()}")
-        logger.debug(f"Labels batch shape: {train_labels.size()}")
-        img = train_features[0].squeeze(1)
-        img = img[1, :, :].numpy()
-        label = train_labels[0]
-        if label.ndim == 0:
-            logger.debug(f"Sample label value: {label.item()}")
-        else:
-            logger.debug(f"Sample label tensor: {label}")
-    except Exception as e:
-        raise e
 
 
 def _create_model(
@@ -355,23 +339,43 @@ def _create_model(
     return model
 
 
+def test_loader(ds_loader: DataLoader[tuple[ImageType, np.float64]]) -> tuple[Tensor, Tensor]:
+    """Attempt to grab image and label."""
+    try:
+        train_features: Tensor
+        train_labels: Tensor
+        train_features, train_labels = next(iter(ds_loader))
+        logger.debug(f"Feature batch shape: {train_features.size()}")
+        logger.debug(f"Labels batch shape: {train_labels.size()}")
+        img: Tensor = train_features[0].squeeze(1)
+        _img_arr = img[1, :, :].numpy()
+        label: Tensor = train_labels[0]
+        if label.ndim == 0:
+            logger.debug(f"Sample label value: {label.item()}")
+        else:
+            logger.debug(f"Sample label tensor: {label}")
+        return label.min(), label.max()
+    except Exception as e:
+        raise e
+
+
 def test_training_config(t_cfg: CoreTrainer, a_cfg: AutoConfig) -> None:
     """Validate that the training configuration is well formed."""
     # depends on analysis
-    type_eval: type[npt.NDArray[np.float64] | npt.NDArray[np.intp]] = type(t_cfg.evaluation_metric)
+    type_eval: type[npt.NDArray[np.float64]] | type[npt.NDArray[np.intp]] = type(
+        t_cfg.evaluation_metric
+    )
     if a_cfg.analysis is a_cfg.analysis.CLASS:
         # must be bins, check how many, type
         assert isinstance(t_cfg.evaluation_metric, np.ndarray), (
             f"evaluation_metric is not NDArray, found {type_eval}"
         )
     else:
-        # TODO: create test for regrsession <05-25-25, luxShrine>
         assert isinstance(t_cfg.evaluation_metric, np.ndarray), (
             f"evaluation_metric is not float, found {type_eval}"
         )
 
-    # TODO: create a test fort these, maybe match expected?
-    # t_cfg.model
+    # TODO: create a test for these, maybe match expected?
     # t_cfg.loss_fn
     # t_cfg.optimizer
     # t_cfg.scheduler
@@ -385,15 +389,20 @@ def test_training_config(t_cfg: CoreTrainer, a_cfg: AutoConfig) -> None:
         f"t_cfg.train_ds is not subset, found {type(t_cfg.train_ds)}"
     )
 
-    # run through tester
-    test_loader(t_cfg.train_loader)
-    test_loader(t_cfg.val_loader)
+    # test each loader
+    for loader in (t_cfg.train_loader, t_cfg.val_loader):
+        label_min, label_max = test_loader(loader)
+        # check that labels are in range expected
+        # n_classes = pred.size(1)
+        if (label_min < 0) or (label_max >= a_cfg.num_classes):
+            raise Exception(f"label out of range: {label_min} – {label_max}")
 
     # TODO: within expected range, type
     # t_cfg.z_sig
     # t_cfg.z_mu
-    # WARN: doesn't render in console correctly, interupts rich progress bar
-    print("[black on green]--- Training Config Validated ---")
+
+    # logging doesn't render in console correctly, interupts rich progress bar
+    console.rule("[black on green] Training Config Validated ")
 
 
 def train_eval_epoch(
@@ -425,7 +434,7 @@ def train_eval_epoch(
         "Train", total=len(epoch_cfg.train_loader), avg_loss=train_loss_start
     )
     val_task = progress_bar.add_task(
-        "Eval", total=len(epoch_cfg.val_loader), avg_loss=val_loss_start
+        "Evaluation", total=len(epoch_cfg.val_loader), avg_loss=val_loss_start
     )
 
     _ = epoch_cfg.model.train()
@@ -444,7 +453,9 @@ def train_eval_epoch(
                     # -- Training ----------------------------------------------------------------
                     # ensure model is on proper device
                     progress_bar.reset(
-                        train_task, total=len(epoch_cfg.train_loader), train_loss=0, avg_loss=0
+                        train_task,
+                        total=len(epoch_cfg.train_loader),
+                        train_loss=0,
                     )
                     train_loss_epoch, labels_tensor, train_total_samples, _ = epoch_loop(
                         a_cfg, epoch_cfg, progress_bar, train_task, "train"
@@ -453,7 +464,9 @@ def train_eval_epoch(
                 else:
                     # -- Evaluation Loop ---------------------------------------------------------
                     progress_bar.reset(
-                        val_task, total=len(epoch_cfg.val_loader), val_loss=0, avg_loss=0
+                        val_task,
+                        total=len(epoch_cfg.val_loader),
+                        val_loss=0,
                     )
                     with torch.no_grad():
                         avg_loss_val, labels_tensor, total_samples_for_loss, metric_val = (
@@ -478,11 +491,11 @@ def train_eval_epoch(
                 if len(metric_val_hist) >= 6:
                     _ = metric_val_hist.pop(0)
                     # get percent diff to measure improvement, desire current < previous
-                    perc_diff_hist_three = (metric_val_hist[3] - metric_val) / (
-                        (metric_val_hist[3] + metric_val) / 2
+                    perc_diff_hist_three = (metric_val_hist[2] - metric_val) / (
+                        (metric_val_hist[2] + metric_val) / 2
                     )
-                    perc_diff_hist_five = (metric_val_hist[5] - metric_val) / (
-                        (metric_val_hist[5] + metric_val) / 2
+                    perc_diff_hist_five = (metric_val_hist[4] - metric_val) / (
+                        (metric_val_hist[4] + metric_val) / 2
                     )
 
                 if metric_val < best_val_metric:
@@ -494,11 +507,11 @@ def train_eval_epoch(
                 if len(metric_val_hist) >= 6:
                     _ = metric_val_hist.pop(0)
                     # get percent diff to measure improvement, desire current > previous
-                    perc_diff_hist_three: float = metric_val - metric_val_hist[3] / (
-                        (metric_val_hist[3] + metric_val) / 2
+                    perc_diff_hist_three: float = metric_val - metric_val_hist[2] / (
+                        (metric_val_hist[2] + metric_val) / 2
                     )
-                    perc_diff_hist_five: float = metric_val - metric_val_hist[5] / (
-                        (metric_val_hist[5] + metric_val) / 2
+                    perc_diff_hist_five: float = metric_val - metric_val_hist[4] / (
+                        (metric_val_hist[4] + metric_val) / 2
                     )
 
                 if metric_val > best_val_metric:
@@ -519,23 +532,25 @@ def train_eval_epoch(
                 and len(metric_val_hist) >= 6
                 and not improvement_over_three_epoch
             ):
-                print(
+                console.print(
                     f"Small or no improvement of metric val: {perc_diff_hist_three}"
-                    + f" from epoch {epoch - 3} to epoch {epoch}"
+                    + f" from epoch {epoch - 3} to epoch {epoch}",
+                    justify="center",
                 )
                 logger.debug(
-                    f"epoch {epoch - 3} metric_val_hist[3] {metric_val_hist[3]};"
+                    f"epoch {epoch - 3} metric_val_hist[2] {metric_val_hist[2]};"
                     + f" epoch {epoch} metric_val {metric_val}"
                 )
                 # if after 5 epochs, stop training
                 if perc_diff_hist_five < EXPECTED_IMPROVEMENT_PERC:
-                    print(
+                    console.print(
                         "[black on red] Training stopping, little to no improvement after "
-                        + "five epochs"
+                        + "five epochs",
+                        justify="center",
                     )
                     break
 
-            # Save best model, if metric is better
+            # -- Save best model, if metric is better --------------------------------------------
             if save_best_model_flag:
                 # convert to form of 5 numbers, in scientific notation
                 evaluation_sci_notation: str = f"{best_val_metric:3e}"
@@ -615,31 +630,8 @@ def train_eval_epoch(
     return avg_loss_train, avg_loss_val, metric_val, best_val_metric
 
 
-def check_dtype(type_check: str, expected_type, **kwargs) -> bool:
-    """Check all inputs have same types/datatypse, else return exception."""
-    # get first value to be checked against
-    first_value: Any = next(iter(kwargs.values()))
-    match type_check:
-        # case for tensor items
-        case "dtype":
-            # if expected type is passed, check it against each item
-            if expected_type is not None:
-                all_correct_type = all(v.dtype == expected_type for v in kwargs.values())
-            else:
-                # otherwise ensure consistency with first dtype
-                all_correct_type = all(v.dtype == first_value.dtype for v in kwargs.values())
-            # not all the correct type, show each items dtype
-            if all_correct_type is False:
-                logger.error([(k, v.dtype) for k, v in kwargs.items()])
-                return False
-            return True
-
-        case _:
-            raise Exception(f"Unexpected type check argument {type_check}")
-
-
 def epoch_loop(
-    a_cfg: AutoConfig, epoch_cfg: CoreTrainer, progress_bar: Progress, task_id, type: str
+    a_cfg: AutoConfig, epoch_cfg: CoreTrainer, progress_bar: Progress, task_id: TaskID, type: str
 ) -> tuple[float, Tensor, int, float | None]:
     """Do one loop of evaluation and training."""
     device = torch.device("cpu") if a_cfg.device() == "cpu" else torch.device("cuda")
@@ -658,22 +650,21 @@ def epoch_loop(
     total_samples_for_metric = 0  # Denominator for MAE/Accuracy
     labels_tensor: Tensor = torch.empty([1, 1])
     logger.debug(f"Using: {device}, for training.")
+    imgs: Tensor
+    labels: Tensor
     for imgs, labels in loader:
-        # sending the images to the tensor is converting them from a PIL image
-        # to float32 tensors on [0,1]
-        imgs_tens, labels_tens = (
-            # PERF: Non-blocking speed up
-            imgs.to(device, non_blocking=True),
-            labels.to(device, non_blocking=True),
-        )
+        # sending the images to the device is ensures the model, images, and labels
+        # are on the same device, with datatype of float32 tensors on [0,1]
+        # PERF: Non-blocking speed up
+        imgs_tens: Tensor = imgs.to(device, non_blocking=True)
+        labels_tens: Tensor = labels.to(device, non_blocking=True)
+
         assert (
             next(epoch_cfg.model.parameters()).device == imgs_tens.device == labels_tens.device
         ), (
             f"Images {imgs_tens.device}, labels {labels_tens.device}, or model "
             f"{next(epoch_cfg.model.parameters()).device} not on same device."
         )
-        imgs_tens: Tensor
-        labels_tens: Tensor
 
         # -- pass images to model ----------------------------------------------------------------
         # get output of tensor data
@@ -690,7 +681,6 @@ def epoch_loop(
         # check loss fn type
         if isinstance(epoch_cfg.loss_fn, nn.BCEWithLogitsLoss):
             labels_tens = labels_tens.float().unsqueeze(0)  # BCE expects float 0/1
-            logger.debug(f"labels:, {labels_tens.size}")
         elif isinstance(epoch_cfg.loss_fn, nn.CrossEntropyLoss):
             labels_tens = labels_tens.long()
         else:
@@ -714,7 +704,7 @@ def epoch_loop(
         # sum the value of the loss, scaled to the size of image tensor
         # PERF: huge performance hit <05-26-25>
         loss_epoch += cast("float", (loss_fn_current.item() * imgs_tens.size(0)))
-        total_samples += cast("int", imgs_tens.size(0))
+        total_samples += imgs_tens.size(0)
 
         # -- absolute error sum & labels tensor --------------------------------------------------
         if a_cfg.analysis == AnalysisType.REG:
@@ -750,7 +740,10 @@ def epoch_loop(
         metric_val: float = float(abs_err_sum / total_samples_for_metric)
 
         # update progress bar
-        progress_bar.update(task_id, advance=1, loss=f"{loss_epoch / total_samples:.4f}")
+        if type == "val":
+            progress_bar.update(task_id, advance=1, val_loss=loss_epoch / total_samples)
+        else:
+            progress_bar.update(task_id, advance=1, train_loss=loss_epoch / total_samples)
 
     # evaluation
     if type == "val":
@@ -760,24 +753,24 @@ def epoch_loop(
 
 
 def load_ckpt(path_ckpt: str, optimizer: Optimizer, model: nn.Module, device: str) -> Checkpoint:
-    """Load a training checkpoint and restore optimizer and model state."""
-    checkpoint: dict[str, Any] = torch.load(path_ckpt, weights_only=True, map_location=device)
+    """Load a training checkpoint, restore optimizer and model state."""
+    checkpoint_load: dict[str, Any] = torch.load(path_ckpt, weights_only=True, map_location=device)
     # returns unexepected keys or missing keys for the model if either case occurs
-    missing_keys = model.load_state_dict(checkpoint["model_state_dict"])
+    missing_keys = model.load_state_dict(checkpoint_load["model_state_dict"])
     # must move model onto expected device before loading optimiser
     _ = model.to(device)
     if len(missing_keys) > 0:
         logger.info(f"{missing_keys}")
 
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    optimizer.load_state_dict(checkpoint_load["optimizer_state_dict"])
     ckpt: Checkpoint = Checkpoint(
-        epoch=checkpoint["epoch"],
-        train_loss=checkpoint["train_loss"],
-        val_loss=checkpoint["val_loss"],
-        val_metric=checkpoint["val_metric"],
-        bin_centers=checkpoint["bin_centers"],
-        num_classes=checkpoint["num_bins"],
-        l_tens=checkpoint["labels"],
+        epoch=checkpoint_load["epoch"],
+        train_loss=checkpoint_load["train_loss"],
+        val_loss=checkpoint_load["val_loss"],
+        val_metric=checkpoint_load["val_metric"],
+        bin_centers=checkpoint_load["bin_centers"],
+        num_classes=checkpoint_load["num_bins"],
+        l_tens=checkpoint_load["labels"],
     )
 
     return ckpt
