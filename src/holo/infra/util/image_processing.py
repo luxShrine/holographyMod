@@ -9,6 +9,8 @@ from numpy.typing import NDArray
 from PIL import Image, UnidentifiedImageError
 from PIL.Image import Image as ImageType
 
+from holo.infra.log import console_ as console
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,8 +36,7 @@ def norm(data: NDArray[np.float64]) -> NDArray[np.float64]:
     """Normalize input numpy array."""
     max: np.float64 = np.max(data, keepdims=True)
     min: np.float64 = np.min(data, keepdims=True)
-    normed_array = (data - min) / (max - min)
-    return normed_array
+    return (data - min) / (max - min)
 
 
 # check image is not corrupted
@@ -108,12 +109,12 @@ def parse_info(info_file: Path):
     return info
 
 
-def build_metadata_csv(root: Path, out: Path) -> pl.DataFrame:
+def build_metadata_csv(root: Path, csv_name: str) -> pl.DataFrame:
     """Return a dataframe containing the path to each image file with its data from the info.txt file.
 
     Args:
         root: directory of dataset
-        out: directory to save resulting csv to
+        csv_name: filename of csv to be output
     returns:
         dataframe containing dataset paths linked to image's information
 
@@ -131,12 +132,9 @@ def build_metadata_csv(root: Path, out: Path) -> pl.DataFrame:
     df = pl.DataFrame(rows)
     df.glimpse()
 
-    # if output is a directory, save to that directory
-    if Path.is_dir(out):
-        dir_out = out / "metadata.csv"
-        df.write_csv(dir_out, separator=";")
-    else:
-        df.write_csv(out, separator=";")  # otherwise, save to specified file
+    # create full path to save to
+    full_csv_path: Path = root / Path(csv_name)
+    df.write_csv(full_csv_path, separator=";")
 
     return df
 
@@ -172,13 +170,12 @@ def validate_bins(
     if len(good_bins) < 2:
         logger.warning("Not enough populated bins to compute chi^2.")
         return good_bins
-    else:
-        return good_bins
+    return good_bins
 
 
 def print_list(input_list: list[Any]) -> None:
     """Small helper to print lists nicely."""
-    print(*input_list, sep=",")
+    console.print(*input_list, sep=",", justify="center")
 
 
 def convert_array_tolist_type(data_array: NDArray[Any], data_type: Any):
