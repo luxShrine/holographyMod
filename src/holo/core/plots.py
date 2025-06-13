@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import polars as pl
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
+from nicegui import ui
 from PIL import Image
 from rich.progress import track
 
@@ -21,23 +22,50 @@ from holo.infra.util.paths import static_root
 from holo.infra.util.types import DisplayType
 
 if TYPE_CHECKING:
-    from matplotlib.image import AxesImage
     from PIL.Image import Image as ImageType
 
 logger = logging.getLogger(__name__)
 
 
+def _create_subplot_image_colorbar(
+    fig: Figure,
+    ax: Axes,
+    img: npt.NDArray[Any],
+    cmap: str,
+    title: str,
+    vmin: float | None = None,
+    vmax: float | None = None,
+) -> None:
+    im_show = ax.imshow(X=img, cmap=cmap, vmin=vmin, vmax=vmax)
+    _ = ax.set_title(title)
+    _ = fig.colorbar(im_show, ax, shrink=0.8)
+
+
+def _show_multiple_plotly(fig_list: list[go.Figure], layout: dict[str, int] | None = None) -> None:
+    if layout is None:
+        for fig in fig_list:
+            _plot = ui.plotly(fig).classes("w-full h-140")
+    else:
+        if layout["rows"] == 2:
+            with ui.row():
+                for fig in fig_list:
+                    _plot = ui.plotly(fig).classes("w-140 h-140")
+
+    ui.run(reload=False)
+
+
 def _save_show_plot(
-    in_fig: Figure | go.Figure,
+    in_fig: Figure | go.Figure | list[go.Figure],
     display: DisplayType | str,
     title: str | None,
     path_to_plot: str = "",
 ):
-    """Help for repeated save or show functionality."""
+    """Save or show a single figure."""
     if len(path_to_plot) < 1:
         path_to_plot = static_root().as_posix()
     if title is None:
         title = "unset_title"
+
     if type(in_fig) is Figure:  # matplotlib
         in_fig.savefig(path_to_plot, dpi=300)
         logger.info(f"{title} plot saved to, {Path(path_to_plot)}")
@@ -53,8 +81,10 @@ def _save_show_plot(
             html_savepath = Path(path_to_plot).with_suffix(".html")
             _ = in_fig.write_html(html_savepath)
             logger.info(f"{title} plot saved to, {html_savepath}")
+    elif (type(in_fig) is list) and (any(isinstance(o, go.Figure) for o in in_fig)):  # plotly list
+        _show_multiple_plotly(in_fig, {"rows": 2})
     else:
-        logger.error("Unkown plot type passed to save plot function.")
+        logger.error(f"Unkown plot type passed to save plot function: {type(in_fig)}.")
 
 
 def plot_actual_versus_predicted(plot_info: PlotPred, title: str, path_to_plot: str) -> None:
@@ -366,60 +396,21 @@ def plot_residual_vs_true(plot_info, title, path_to_plot):
     _save_show_plot(in_fig=fig, path_to_plot=path_to_plot, display=plot_info.display, title=title)
 
 
-def plot_violin_depth_bins(
-    plot_info,
-    title,
-    path_to_plot,
-):
-    """Plot a violin distribution of prediction errors grouped by depth bins."""
-    # sanity
-    z_true_m = np.array(plot_info.z_true_m)
-    z_pred_m = np.array(plot_info.z_pred_m)
-    assert z_pred_m.shape == z_true_m.shape, "Vectors must match"
-    depth_um = z_true_m * 1e6
-    err_um = (z_pred_m - z_true_m) * 1e6
-
-    # choose depth bins so each violin has ~50 points
-    n_bins = max(10, len(depth_um) // 50)  # tweak divisor as desired
-    np.linspace(depth_um.min(), depth_um.max(), n_bins + 1, dtype=np.float64)
-    bin_idx = np.digitize(depth_um, plot_info.bins) - 1  # → 0 … n_bins-1
-
-    df = pl.DataFrame(
-        {
-            "bin": bin_idx,
-            "err_um": err_um,
-        }
-    )
-
-    fig = go.Figure(go.Violin(y=df["err_um"], x=df["bin"], width=0.9))
-
-    _ = fig.update_layout(
-        yaxis_zeroline=True,
-        title_text=title,
-        xaxis_title_text="True focus depth (µm)",
-        yaxis_title_text="(pred true) (µm)",
-        legend_title_text="Legend",
-        hovermode="closest",
-    )
-
-    _save_show_plot(in_fig=fig, path_to_plot=path_to_plot, display=plot_info.display, title=title)
-
-
 def plot_hexbin_with_marginals(
-    plot_info,
-    title,
-    path_to_plot,
-):
+    plot_info: PlotPred,
+    title: str,
+    path_to_plot: str,
+) -> None:
     """Plot density of predictions of z."""
     # data
-    mask = np.isfinite(np.array(plot_info.z_true_m)) & np.isfinite(np.array(plot_info.z_pred_m))
-    z_true_m, z_pred_m = plot_info.z_true_m[mask], plot_info.z_pred_m[mask]
+    mask = np.isfinite(np.array(plot_info.z_test)) & np.isfinite(np.array(plot_info.z_test_pred))
+    z_test, z_test_pred = plot_info.z_test[mask], plot_info.z_test_pred[mask]
 
-    if z_true_m.size == 0:
+    if z_test.size == 0:
         logger.warning("plot_hexbin: no finite points after filtering")
         return
 
-    z_true_um, z_pred_um = z_true_m * 1e6, z_pred_m * 1e6
+    z_true_um, z_pred_um = z_test * 1e6, z_test_pred * 1e6
 
     # figure & main hexbin
     df = pl.DataFrame(
