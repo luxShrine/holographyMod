@@ -1,13 +1,14 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import torch
+import torch.nn as nn
 from PIL import Image
 from torchvision import transforms
 
 import holo.infra.training as ts
 from holo.infra.util.image_processing import crop_max_square
-from holo.infra.util.types import Np1Array32
+from holo.infra.util.types import AnalysisType, Np1Array32
 
 if TYPE_CHECKING:
     from PIL.Image import Image as ImageType
@@ -49,21 +50,23 @@ def torch_recon(
     """
     pil_image: ImageType = Image.open(img_file_path).convert("RGB")
     pil_image_crop = crop_max_square(pil_image)
-    np.asarray(crop_max_square(pil_image))
+    _np_image = np.asarray(crop_max_square(pil_image))
 
     # build architecture + load weights
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     ## WARN: This is iffy
     ckpt = torch.load(ckpt_file, map_location=device, weights_only=False)
-    bin_centers = ckpt["bin_centers"]
+    bin_centers = cast("list[float]", ckpt["bin_centers"])
 
-    model = ts.get_model(ckpt["num_bins"], backbone).to(device)
-    model.load_state_dict(ckpt["model_state_dict"])
-    model.eval()
+    num_classes: int = cast("int", ckpt["num_bins"])
+    auto_method: AnalysisType = AnalysisType.CLASS if num_classes != 1 else AnalysisType.REG
+    model: nn.Module = ts.get_model(backbone, num_classes, auto_method).to(device)
+    _ = model.load_state_dict(ckpt["model_state_dict"])
+    _ = model.eval()
 
     # load & preprocess image
-    preprocess = transforms.Compose(
+    preprocess_trans = transforms.Compose(
         [
             transforms.Resize((crop_size, crop_size)),
             transforms.Grayscale(num_output_channels=3),  # WARN: needed?
@@ -73,7 +76,7 @@ def torch_recon(
         ]
     )
     # shape [1, C, H, W]
-    x = preprocess(pil_image_crop).unsqueeze(0).to(device)
+    x = preprocess_trans(pil_image_crop).unsqueeze(0).to(device)
 
     # prediction
     with torch.no_grad():
