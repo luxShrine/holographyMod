@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -100,8 +100,8 @@ def plot_actual_versus_predicted(plot_info: PlotPred, title: str, path_to_plot: 
     z_train_phys = np.array(plot_info.z_train, dtype=np.float64)
     z_val_pred_phys = np.array(plot_info.z_test_pred, dtype=np.float64)
     z_train_pred_phys = np.array(plot_info.z_train_pred, dtype=np.float64)
-    z_val_pred_min = z_val_pred_phys.min()
-    z_train_pred_min = z_train_pred_phys.min()
+    z_val_pred_min = cast("np.float64", z_val_pred_phys.min())
+    z_train_pred_min = cast("np.float64", z_train_pred_phys.min())
     data = {
         "z_val_phys": z_val_phys,
         "z_train_phys": z_train_phys,
@@ -111,7 +111,7 @@ def plot_actual_versus_predicted(plot_info: PlotPred, title: str, path_to_plot: 
 
     # Convert to µm for plotting, concat creates null values automatically since
     # prediction and evaluation arrays aren't the same size
-    df: DataFrame = pl.concat(
+    df_concat: DataFrame = pl.concat(
         items=[pl.DataFrame({name: (val * 1e6)}) for name, val in data.items()],
         how="horizontal",
     )
@@ -119,11 +119,11 @@ def plot_actual_versus_predicted(plot_info: PlotPred, title: str, path_to_plot: 
     # plot as long as there are values in each bin
     residual_val = pl.col("z_val_pred_phys") - pl.col("z_val_phys")
     residual_train = pl.col("z_train_pred_phys") - pl.col("z_train_phys")
-    df: DataFrame = df.with_columns((residual_val).alias("residual_val"))
-    df: DataFrame = df.with_columns((residual_train).alias("residual_train"))
+    df_res_val: DataFrame = df_concat.with_columns((residual_val).alias("residual_val"))
+    df_res_val_train: DataFrame = df_res_val.with_columns((residual_train).alias("residual_train"))
     # libraries like scipy and numpy dont play nicely with null values,
     # separate df for numerical manipulation
-    df_filled: DataFrame = df.fill_null(0)
+    df_filled: DataFrame = df_res_val_train.fill_null(0)
 
     # -- Confusion Matrix plot -------------------------------------------------------------------
     # Ensure bin_edges is not None and is a numpy array for classification
@@ -229,8 +229,8 @@ def plot_actual_versus_predicted(plot_info: PlotPred, title: str, path_to_plot: 
     # Use the non filled df as plotly will properly drop the null values
     _ = fig.add_trace(
         go.Scatter(
-            x=df["z_val_pred_phys"].to_numpy(),
-            y=df["residual_val"].to_numpy(),
+            x=df_res_val_train["z_val_pred_phys"].to_numpy(),
+            y=df_res_val_train["residual_val"].to_numpy(),
             mode="markers",
             marker={
                 "color": density_val,  # continuous array
@@ -249,8 +249,8 @@ def plot_actual_versus_predicted(plot_info: PlotPred, title: str, path_to_plot: 
     )
     _ = fig.add_trace(
         go.Scatter(
-            x=df["z_train_pred_phys"].to_numpy(),
-            y=df["residual_train"].to_numpy(),
+            x=df_res_val_train["z_train_pred_phys"].to_numpy(),
+            y=df_res_val_train["residual_train"].to_numpy(),
             mode="markers",
             marker={
                 "color": density_train,
@@ -271,7 +271,7 @@ def plot_actual_versus_predicted(plot_info: PlotPred, title: str, path_to_plot: 
     # -- add the marginal histogram (horizontal for y-axis) --------------------------------------
     _ = fig.add_trace(
         go.Histogram(
-            y=df["residual_val"],
+            y=df_res_val_train["residual_val"],
             marker_color="rgba(68,1,84,0.7)",
             name="Validation",
             legendgroup="VAL",  # same group -> toggles together
@@ -284,7 +284,7 @@ def plot_actual_versus_predicted(plot_info: PlotPred, title: str, path_to_plot: 
 
     _ = fig.add_trace(
         go.Histogram(
-            y=df["residual_train"],
+            y=df_res_val_train["residual_train"],
             marker_color="rgba(255,183,76,0.7)",
             name="Train",
             legendgroup="TRAIN",
@@ -309,7 +309,7 @@ def plot_actual_versus_predicted(plot_info: PlotPred, title: str, path_to_plot: 
         hovermode="closest",
         legend={"yanchor": "top", "y": 0.99, "xanchor": "left", "x": 0.01},
     )
-    _save_show_plot(fig, plot_info.display, title, path_to_plot)
+    _save_show_plot([fig_cm, fig], plot_info.display, title, path_to_plot)
 
 
 def plot_residual_vs_true(plot_info, title, path_to_plot):
