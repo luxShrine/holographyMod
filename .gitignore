@@ -2,9 +2,11 @@
 /*.pdf
 report.html
 arxiv.tar.gz
+logs/*
 
 # the trained models
 *.pth
+checkpoints/*
 
 # Figure output
 src/tex/figures/*
@@ -13,6 +15,3 @@ src/tex/figures/*
 src/*.egg-info
 __pycache__
 *.synctex.gz
-*.log
-*.json
-*.jsonl
