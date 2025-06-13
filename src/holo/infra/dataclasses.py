@@ -127,13 +127,13 @@ class CoreTrainer:
 class PlotPred:
     """Class for storing plotting information."""
 
-    z_test_pred: list[np.float64]
-    z_test: list[np.float64]
-    z_train_pred: list[np.float64]
-    z_train: list[np.float64]
-    zerr_train: list[np.float64]
-    zerr_test: list[np.float64]
-    bin_edges: list[np.float64] | None
+    z_test_pred: list[float]
+    z_test: list[float]
+    z_train_pred: list[float]
+    z_train: list[float]
+    zerr_train: list[float]
+    zerr_test: list[float]
+    bin_edges: list[float] | None
     title: str
     path_to_plot: str
     display: DisplayType | str
@@ -156,6 +156,7 @@ class GatherZ:
 @dataclass
 class Checkpoint:
     """Serialized training state used for resuming."""
+
     epoch: int
     train_loss: float
     val_loss: float
@@ -169,8 +170,9 @@ def load_obj(
     json_name: str = "train_data", dataclass: str = "PlotPred"
 ) -> list[PlotPred | GatherZ]:
     """Load saved json containing object of class plotPred or GatherZ."""
+    str_path_to_json: str = (paths.repo_root() / Path("checkpoints") / Path(json_name)).as_posix()
     try:
-        with open(json_name) as file:
+        with open(str_path_to_json) as file:
             if dataclass == "PlotPred":
                 return [PlotPred(**x) for x in json.load(file)]
             if dataclass == "GatherZ":
@@ -183,6 +185,7 @@ def load_obj(
 
 def save_obj(c: PlotPred | GatherZ, json_name: str = "train_data") -> None:
     """Save object of class plotPred or GatherZ."""
+    str_path_to_json: str = (paths.repo_root() / Path("checkpoints") / Path(json_name)).as_posix()
     data = [asdict(x) for x in [c]]
-    with open(json_name, "w") as file:
+    with open(str_path_to_json, "w") as file:
         json.dump(data, file)
