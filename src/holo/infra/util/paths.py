@@ -10,15 +10,16 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def path_check(**kwargs: Path):
+def path_check(**kwargs: Path) -> None:
     """Ensure all paths passed in exist."""
-    logger = logging.getLogger(__name__)
-    for variable, path_to_check in kwargs:
+    for variable, path_to_check in kwargs.items():
         try:
             assert isinstance(path_to_check, Path), f"{path_to_check} is not a path."
-            _ = path_to_check.exists()
+            valid_path: bool = path_to_check.exists()
+            if not valid_path:
+                raise Exception(f"Path for {variable} does not exist at {path_to_check}")
         except Exception as e:
-            logger.error(f"{variable} not found/processed at {path_to_check}")
+            logger.error(f"{variable} not processed as path: {path_to_check}")
             raise e
 
 
